@@ -374,10 +374,10 @@ export class MyDayService {
    * Get past N days history overview
    */
   static async getHistory(userId, days = 7) {
-    const safeDays = Number.isInteger(days)
-      ? Math.min(Math.max(days, 1), 30)
-      : Math.min(Math.max(Number.parseInt(days, 10) || 7, 1), 30);
+    const parsedDays = Number.isInteger(days) ? days : Number.parseInt(days, 10) || 7;
+    const safeDays = Math.min(Math.max(parsedDays, 1), 30);
 
+    // Inline validated integer for LIMIT because TiDB prepared statements reject numeric parameters in LIMIT ?
     const historyRows = await query(
       `SELECT s.log_date, s.study_hours, s.work_hours, s.active_steps, s.sleep_hours, s.mood,
               COUNT(a.id) as total_activities
@@ -386,8 +386,8 @@ export class MyDayService {
        WHERE s.user_id = ?
        GROUP BY s.log_date, s.study_hours, s.work_hours, s.active_steps, s.sleep_hours, s.mood
        ORDER BY s.log_date DESC
-       LIMIT ?`,
-      [userId, safeDays]
+       LIMIT ${safeDays}`,
+      [userId]
     );
 
     return historyRows.map((r) => {

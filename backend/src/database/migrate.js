@@ -1,30 +1,40 @@
 import mysql from 'mysql2/promise';
-import { env } from '../config/env.js';
+import { env, buildDbConnectionConfig } from '../config/env.js';
 
 export const runMigrations = async () => {
   console.log('[Migration] Starting LIFE OS Database Migration...');
   let connection;
 
   try {
-    // 1. Connect without selecting database to ensure it exists
-    connection = await mysql.createConnection({
-      host: env.db.host,
-      port: env.db.port,
-      user: env.db.user,
-      password: env.db.password,
-    });
+    if (env.db.autoCreateDatabase) {
+      try {
+        connection = await mysql.createConnection(buildDbConnectionConfig({ includeDatabase: false }));
+        console.log(`[Migration] Connected to MySQL Server at ${env.db.host}:${env.db.port}`);
 
-    console.log(`[Migration] Connected to MySQL Server at ${env.db.host}:${env.db.port}`);
-
-    // 2. Create database if not exists
-    await connection.query(`
-      CREATE DATABASE IF NOT EXISTS \`${env.db.database}\`
-      CHARACTER SET utf8mb4
-      COLLATE utf8mb4_unicode_ci;
-    `);
-    console.log(`[Migration] Database '${env.db.database}' checked/created.`);
-
-    await connection.changeUser({ database: env.db.database });
+        await connection.query(`
+          CREATE DATABASE IF NOT EXISTS \`${env.db.database}\`
+          CHARACTER SET utf8mb4
+          COLLATE utf8mb4_unicode_ci;
+        `);
+        await connection.query(`USE \`${env.db.database}\``);
+        console.log(`[Migration] Database '${env.db.database}' checked/selected.`);
+      } catch (createErr) {
+        // Fallback if managed SQL user lacks CREATE DATABASE privileges for a pre-created schema
+        if (createErr.code === 'ER_DBACCESS_DENIED_ERROR' || createErr.code === 'ER_SPECIFIC_ACCESS_DENIED_ERROR') {
+          if (connection) {
+            await connection.end().catch(() => {});
+            connection = null;
+          }
+          connection = await mysql.createConnection(buildDbConnectionConfig({ includeDatabase: true }));
+          console.log(`[Migration] Connected directly to database '${env.db.database}'.`);
+        } else {
+          throw createErr;
+        }
+      }
+    } else {
+      connection = await mysql.createConnection(buildDbConnectionConfig({ includeDatabase: true }));
+      console.log(`[Migration] Connected directly to database '${env.db.database}'.`);
+    }
 
     // 3. Create 'users' table
     await connection.query(`

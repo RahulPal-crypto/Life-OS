@@ -7,24 +7,40 @@ import profileRoutes from './modules/profile/profile.routes.js';
 import myDayRoutes from './modules/myDay/myDay.routes.js';
 import { notFoundHandler, errorHandler } from './middlewares/errorHandler.js';
 import { apiRateLimiter } from './middlewares/rateLimiter.js';
-import { sendSuccess } from './utils/apiResponse.js';
+import { sendSuccess, sendError } from './utils/apiResponse.js';
+import { pingDatabase } from './config/db.js';
 
 const app = express();
 
+// Trust reverse-proxy headers (X-Forwarded-For) so rate limiting uses the real client IP
+app.set('trust proxy', env.trustProxy);
+
 // Security & Parsing Middlewares
 app.use(helmet());
-app.use(cors({ origin: true, credentials: true }));
+app.use(cors({ origin: env.corsOrigin, credentials: true }));
 app.use(express.json({ limit: '5mb' }));
 app.use(express.urlencoded({ extended: true, limit: '5mb' }));
 
-// Health Check Endpoint
-app.get('/health', (req, res) => {
-  return sendSuccess(res, 'LIFE OS API Server is healthy and running.', {
-    status: 'UP',
-    version: '1.0.0',
-    environment: env.nodeEnv,
-    timestamp: new Date().toISOString(),
-  });
+// Health Check Endpoint (verifies live DB connectivity)
+app.get('/health', async (req, res) => {
+  try {
+    await pingDatabase();
+    return sendSuccess(res, 'LIFE OS API Server is healthy and running.', {
+      status: 'UP',
+      database: 'UP',
+      version: '1.0.0',
+      environment: env.nodeEnv,
+      timestamp: new Date().toISOString(),
+    });
+  } catch (error) {
+    return sendError(
+      res,
+      'LIFE OS API Server cannot reach the database.',
+      503,
+      'SERVICE_UNAVAILABLE',
+      env.nodeEnv === 'development' ? error.message : null
+    );
+  }
 });
 
 app.get(env.apiPrefix, (req, res) => {

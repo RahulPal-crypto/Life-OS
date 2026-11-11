@@ -1,13 +1,8 @@
 import mysql from 'mysql2/promise';
-import { env } from './env.js';
+import { env, buildDbConnectionConfig } from './env.js';
 
 export const pool = mysql.createPool({
-  host: env.db.host,
-  port: env.db.port,
-  user: env.db.user,
-  password: env.db.password,
-  database: env.db.database,
-  dateStrings: ['DATE'],
+  ...buildDbConnectionConfig({ includeDatabase: true }),
   waitForConnections: true,
   connectionLimit: env.db.connectionLimit,
   queueLimit: 0,
@@ -42,11 +37,15 @@ export const withTransaction = async (callback) => {
   }
 };
 
+export const pingDatabase = async () => {
+  await pool.query('SELECT 1');
+};
+
 export const testConnection = async () => {
   try {
-    const connection = await pool.getConnection();
-    console.log(`[Database] MySQL connected successfully to '${env.db.database}' at ${env.db.host}:${env.db.port}`);
-    connection.release();
+    await pingDatabase();
+    const tlsLabel = env.db.ssl ? ' (TLS)' : '';
+    console.log(`[Database] MySQL connected successfully to '${env.db.database}' at ${env.db.host}:${env.db.port}${tlsLabel}`);
     return true;
   } catch (error) {
     console.error(`[Database Error] Failed to connect to MySQL:`, error.message);
