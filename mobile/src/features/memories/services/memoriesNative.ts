@@ -18,6 +18,12 @@ export interface LocalStorageStats {
   totalBytes: number;
 }
 
+export interface DeleteSourceResult {
+  deletedCount: number;
+  promptRequired: boolean;
+  failedCount: number;
+}
+
 interface MemoriesVaultNativeModule {
   pickFiles: (mode: string) => Promise<PickedLocalFile[]>;
   captureMedia: (kind: string) => Promise<PickedLocalFile | null>;
@@ -42,6 +48,7 @@ interface MemoriesVaultNativeModule {
   openFileExternally: (pathOrUri: string, mimeType: string | null) => Promise<boolean>;
   shareFiles: (pathsOrUris: string[], mimeType: string | null) => Promise<boolean>;
   deleteLocalFile: (pathOrUri: string) => Promise<boolean>;
+  deleteSourceUris: (sourceUris: string[]) => Promise<DeleteSourceResult>;
   getLocalStorageStats: () => Promise<LocalStorageStats>;
   setScreenSecure: (enabled: boolean) => Promise<boolean>;
   canUseBiometric: () => Promise<boolean>;
@@ -187,6 +194,18 @@ export const memoriesNative = {
       await nativeVault.deleteLocalFile(pathOrUri);
     } catch {
       // Best-effort cleanup
+    }
+  },
+
+  deleteSourceUris: async (sourceUris: string[]): Promise<DeleteSourceResult> => {
+    const valid = sourceUris.filter((u): u is string => Boolean(u && u.startsWith('content://')));
+    if (!nativeVault || isJestEnv() || valid.length === 0) {
+      return { deletedCount: 0, promptRequired: false, failedCount: 0 };
+    }
+    try {
+      return await nativeVault.deleteSourceUris(valid);
+    } catch {
+      return { deletedCount: 0, promptRequired: false, failedCount: valid.length };
     }
   },
 

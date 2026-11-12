@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Alert,
@@ -105,6 +105,26 @@ export const MyMemoriesScreen: React.FC<MyMemoriesScreenProps> = ({
   const [destModalAction, setDestModalAction] = useState<'move' | 'copy' | null>(null);
   const [viewerItem, setViewerItem] = useState<MemoryItem | null>(null);
   const [isRecordingAudio, setIsRecordingAudio] = useState(false);
+  const [importingMessage, setImportingMessage] = useState<string | null>(null);
+  const suppressAutoLockRef = useRef(false);
+  const suppressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const runWithoutAutoLock = useCallback(async <T,>(fn: () => Promise<T>): Promise<T> => {
+    if (suppressTimerRef.current) {
+      clearTimeout(suppressTimerRef.current);
+      suppressTimerRef.current = null;
+    }
+    suppressAutoLockRef.current = true;
+    try {
+      return await fn();
+    } finally {
+      // Allow Android a short window after system picker or delete dialog closes to settle to active
+      suppressTimerRef.current = setTimeout(() => {
+        suppressAutoLockRef.current = false;
+        suppressTimerRef.current = null;
+      }, 900);
+    }
+  }, []);
 
   const currentFolder = folderStack.length > 0 ? folderStack[folderStack.length - 1] : null;
   const inSelectionMode = selectedIds.size > 0;
@@ -129,15 +149,22 @@ export const MyMemoriesScreen: React.FC<MyMemoriesScreenProps> = ({
     setViewerItem(null);
   }, []);
 
-  // Auto-lock Safe Vault when app minimizes or screen locks
+  // Auto-lock Safe Vault when app minimizes or screen locks (skip while system picker/camera/dialogs are open)
   useEffect(() => {
     const sub = AppState.addEventListener('change', (nextState: AppStateStatus) => {
-      if (nextState !== 'active' && memoriesService.isVaultUnlocked()) {
+      if (
+        nextState === 'background' &&
+        !suppressAutoLockRef.current &&
+        memoriesService.isVaultUnlocked()
+      ) {
         lockSafeVault();
       }
     });
     return () => {
       sub.remove();
+      if (suppressTimerRef.current) {
+        clearTimeout(suppressTimerRef.current);
+      }
       lockSafeVault();
     };
   }, [lockSafeVault]);
@@ -245,45 +272,79 @@ export const MyMemoriesScreen: React.FC<MyMemoriesScreenProps> = ({
   const persistPickedFiles = async (files: PickedLocalFile[]) => {
     if (!files.length) return;
     const todayStr = new Date().toISOString().slice(0, 10);
+    const sourceUrisToRemove: string[] = [];
 
-    for (const file of files) {
-      let localUri: string | null = file.localUri;
-      let vaultUri: string | null = null;
-      let finalSize = file.sizeBytes || 0;
+    setImportingMessage(
+      isVaultMode
+        ? `Encrypting ${files.length} file${files.length > 1 ? 's' : ''} into Safe Vault...`
+        : `Saving ${files.length} file${files.length > 1 ? 's' : ''} to My Memories...`
+    );
 
-      if (isVaultMode) {
-        const tempId = `v_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
-        const encrypted = await memoriesNative.encryptFileToVault(file.localUri, tempId, true);
-        if (encrypted) {
-          vaultUri = encrypted.vaultUri;
-          localUri = null;
-          finalSize = encrypted.sizeBytes || finalSize;
+    try {
+      for (const file of files) {
+        let localUri: string | null = file.localUri;
+        let vaultUri: string | null = null;
+        let finalSize = file.sizeBytes || 0;
+
+        if (isVaultMode) {
+          const tempId = `v_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+          const encrypted = await memoriesNative.encryptFileToVault(file.localUri, tempId, true);
+          if (encrypted) {
+            vaultUri = encrypted.vaultUri;
+            localUri = null;
+            finalSize = encrypted.sizeBytes || finalSize;
+            if (file.sourceUri) {
+              sourceUrisToRemove.push(file.sourceUri);
+            }
+          }
         }
+
+        await memoriesService.createItem({
+          folderId: currentFolder?.id || null,
+          title: file.fileName.replace(/\.[^/.]+$/, '') || file.fileName,
+          fileName: file.fileName,
+          mediaType: file.mediaType,
+          mimeType: file.mimeType,
+          sizeBytes: finalSize,
+          localUri,
+          vaultUri,
+          memoryDate: todayStr,
+          isVault: isVaultMode,
+        });
       }
 
-      await memoriesService.createItem({
-        folderId: currentFolder?.id || null,
-        title: file.fileName.replace(/\.[^/.]+$/, '') || file.fileName,
-        fileName: file.fileName,
-        mediaType: file.mediaType,
-        mimeType: file.mimeType,
-        sizeBytes: finalSize,
-        localUri,
-        vaultUri,
-        memoryDate: todayStr,
-        isVault: isVaultMode,
-      });
+      loadMemories(true);
+
+      // Automatically remove originals from Gallery when imported into Safe Vault
+      if (isVaultMode && sourceUrisToRemove.length > 0) {
+        setImportingMessage('Removing original files from Gallery...');
+        const delRes = await memoriesNative.deleteSourceUris(sourceUrisToRemove);
+        if (delRes.failedCount > 0 && delRes.deletedCount === 0) {
+          Alert.alert(
+            'Saved to Safe Vault',
+            'Your files are encrypted in Safe Vault, but Android did not allow automatic removal from Gallery. You can delete the originals from Gallery manually.'
+          );
+        } else if (delRes.failedCount > 0) {
+          Alert.alert(
+            'Saved to Safe Vault',
+            `${delRes.deletedCount} original file(s) removed from Gallery. ${delRes.failedCount} could not be removed automatically.`
+          );
+        }
+      }
+    } finally {
+      setImportingMessage(null);
     }
-    loadMemories(true);
   };
 
   const handleImportFiles = async (mode: PickMode) => {
     setAddSheetVisible(false);
     try {
-      const picked = await memoriesNative.pickFiles(mode);
-      if (picked.length > 0) {
-        await persistPickedFiles(picked);
-      }
+      await runWithoutAutoLock(async () => {
+        const picked = await memoriesNative.pickFiles(mode);
+        if (picked.length > 0) {
+          await persistPickedFiles(picked);
+        }
+      });
     } catch (err: any) {
       Alert.alert('Import Failed', err?.message || 'Unable to import selected files.');
     }
@@ -292,10 +353,12 @@ export const MyMemoriesScreen: React.FC<MyMemoriesScreenProps> = ({
   const handleCameraCapture = async (kind: 'photo' | 'video') => {
     setAddSheetVisible(false);
     try {
-      const captured = await memoriesNative.captureMedia(kind);
-      if (captured) {
-        await persistPickedFiles([captured]);
-      }
+      await runWithoutAutoLock(async () => {
+        const captured = await memoriesNative.captureMedia(kind);
+        if (captured) {
+          await persistPickedFiles([captured]);
+        }
+      });
     } catch (err: any) {
       Alert.alert('Camera Error', err?.message || 'Unable to capture media.');
     }
@@ -568,6 +631,16 @@ export const MyMemoriesScreen: React.FC<MyMemoriesScreenProps> = ({
                 Stop & Save
               </Text>
             </Pressable>
+          </View>
+        )}
+
+        {/* Import / Encryption Progress Banner */}
+        {importingMessage && (
+          <View style={styles.importingBanner}>
+            <ActivityIndicator size="small" color="#FFFFFF" />
+            <Text variant="caption" color="#FFFFFF" style={styles.importingText}>
+              {importingMessage}
+            </Text>
           </View>
         )}
 
@@ -1038,6 +1111,7 @@ export const MyMemoriesScreen: React.FC<MyMemoriesScreenProps> = ({
             setViewerItem(null);
             loadMemories(true);
           }}
+          onExternalAction={runWithoutAutoLock}
         />
       </View>
     </ScreenContainer>
@@ -1090,6 +1164,15 @@ const styles = StyleSheet.create({
     borderRadius: 8,
   },
   recordingStopText: { fontSize: 11.5, fontWeight: '800' },
+  importingBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    backgroundColor: '#6D28D9',
+    paddingHorizontal: spacing.md,
+    paddingVertical: 8,
+  },
+  importingText: { fontSize: 12, fontWeight: '700' },
   searchBarRow: {
     flexDirection: 'row',
     alignItems: 'center',

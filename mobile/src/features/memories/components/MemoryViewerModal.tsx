@@ -36,6 +36,7 @@ interface MemoryViewerModalProps {
   onMoveVault: (item: MemoryItem) => void;
   onMoveFolder: (item: MemoryItem) => void;
   onDelete: (item: MemoryItem) => void;
+  onExternalAction?: <T>(fn: () => Promise<T>) => Promise<T>;
 }
 
 export const MemoryViewerModal: React.FC<MemoryViewerModalProps> = ({
@@ -47,6 +48,7 @@ export const MemoryViewerModal: React.FC<MemoryViewerModalProps> = ({
   onMoveVault,
   onMoveFolder,
   onDelete,
+  onExternalAction,
 }) => {
   const [resolvedUri, setResolvedUri] = useState<string | null>(null);
   const [title, setTitle] = useState('');
@@ -93,7 +95,8 @@ export const MemoryViewerModal: React.FC<MemoryViewerModalProps> = ({
       return;
     }
     try {
-      await memoriesNative.openFileExternally(resolvedUri, item.mimeType);
+      const exec = () => memoriesNative.openFileExternally(resolvedUri, item.mimeType);
+      await (onExternalAction ? onExternalAction(exec) : exec());
     } catch (err: any) {
       Alert.alert('Cannot Open File', err?.message || 'No viewer installed for this file type.');
     }
@@ -105,7 +108,8 @@ export const MemoryViewerModal: React.FC<MemoryViewerModalProps> = ({
       return;
     }
     try {
-      await memoriesNative.shareFiles([resolvedUri], item.mimeType);
+      const exec = () => memoriesNative.shareFiles([resolvedUri], item.mimeType);
+      await (onExternalAction ? onExternalAction(exec) : exec());
     } catch (err: any) {
       Alert.alert('Share Failed', err?.message || 'Could not share file.');
     }

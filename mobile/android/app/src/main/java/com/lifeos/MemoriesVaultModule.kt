@@ -1,13 +1,16 @@
 package com.lifeos
 
 import android.app.Activity
+import android.app.RecoverableSecurityException
 import android.content.ClipData
+import android.content.ContentUris
 import android.content.Context
 import android.content.Intent
 import android.media.MediaPlayer
 import android.media.MediaRecorder
 import android.net.Uri
 import android.os.Build
+import android.provider.DocumentsContract
 import android.provider.MediaStore
 import android.provider.OpenableColumns
 import android.security.keystore.KeyGenParameterSpec
@@ -48,6 +51,10 @@ class MemoriesVaultModule(private val reactContext: ReactApplicationContext) :
   private var pendingCapturePromise: Promise? = null
   private var pendingCaptureFile: File? = null
   private var pendingCaptureKind: String = "photo"
+  private var pendingDeletePromise: Promise? = null
+  private var pendingDeletePromptCount: Int = 0
+  private var pendingDeleteAlreadyDeleted: Int = 0
+  private var pendingDeleteAlreadyFailed: Int = 0
 
   private var mediaRecorder: MediaRecorder? = null
   private var activeRecordingFile: File? = null
@@ -70,16 +77,24 @@ class MemoriesVaultModule(private val reactContext: ReactApplicationContext) :
           return
         }
 
-        try {
-          val uris = collectUrisFromIntent(data)
-          val results: WritableArray = Arguments.createArray()
-          uris.forEach { uri ->
-            results.pushMap(importContentUriToAppStorage(uri))
-          }
-          promise.resolve(results)
-        } catch (e: Exception) {
-          promise.reject("PICK_FAILED", e.message, e)
+        val uris = collectUrisFromIntent(data)
+        if (uris.isEmpty()) {
+          promise.resolve(Arguments.createArray())
+          return
         }
+
+        // Copy picked content URIs off the main UI thread so multi-photo/video imports stay responsive
+        Thread {
+          try {
+            val results: WritableArray = Arguments.createArray()
+            uris.forEach { uri ->
+              results.pushMap(importContentUriToAppStorage(uri))
+            }
+            promise.resolve(results)
+          } catch (e: Exception) {
+            promise.reject("PICK_FAILED", e.message, e)
+          }
+        }.start()
       } else if (requestCode == REQ_CAPTURE_MEDIA) {
         val promise = pendingCapturePromise
         val tempFile = pendingCaptureFile
@@ -116,6 +131,24 @@ class MemoriesVaultModule(private val reactContext: ReactApplicationContext) :
           tempFile.delete()
           promise.reject("CAPTURE_FAILED", e.message, e)
         }
+      } else if (requestCode == REQ_DELETE_SOURCE) {
+        val promise = pendingDeletePromise
+        val promptCount = pendingDeletePromptCount
+        val deletedSoFar = pendingDeleteAlreadyDeleted
+        val failedSoFar = pendingDeleteAlreadyFailed
+        pendingDeletePromise = null
+        pendingDeletePromptCount = 0
+        pendingDeleteAlreadyDeleted = 0
+        pendingDeleteAlreadyFailed = 0
+        if (promise == null) return
+
+        val approved = resultCode == Activity.RESULT_OK
+        val result = Arguments.createMap().apply {
+          putInt("deletedCount", deletedSoFar + if (approved) promptCount else 0)
+          putBoolean("promptRequired", true)
+          putInt("failedCount", failedSoFar + if (approved) 0 else promptCount)
+        }
+        promise.resolve(result)
       }
     }
   }
@@ -142,6 +175,7 @@ class MemoriesVaultModule(private val reactContext: ReactApplicationContext) :
       val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
         addCategory(Intent.CATEGORY_OPENABLE)
         putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true)
+        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
         when (mode) {
           "photo" -> {
             type = "image/*"
@@ -621,6 +655,199 @@ class MemoriesVaultModule(private val reactContext: ReactApplicationContext) :
     }
   }
 
+  @ReactMethod
+  fun deleteSourceUris(sourceUris: ReadableArray, promise: Promise) {
+    val resolver = reactContext.contentResolver
+    val uris = mutableListOf<Uri>()
+    for (i in 0 until sourceUris.size()) {
+      val raw = sourceUris.getString(i)
+      if (!raw.isNullOrBlank()) {
+        uris.add(Uri.parse(raw))
+      }
+    }
+
+    if (uris.isEmpty()) {
+      promise.resolve(
+        Arguments.createMap().apply {
+          putInt("deletedCount", 0)
+          putBoolean("promptRequired", false)
+          putInt("failedCount", 0)
+        }
+      )
+      return
+    }
+
+    var silentDeleted = 0
+    var failedCount = 0
+    val promptUris = mutableListOf<Uri>()
+
+    uris.forEach { srcUri ->
+      var removed = false
+      if (DocumentsContract.isDocumentUri(reactContext, srcUri)) {
+        try {
+          if (DocumentsContract.deleteDocument(resolver, srcUri)) {
+            removed = true
+            silentDeleted++
+          }
+        } catch (_: Exception) {
+          // Document providers for MediaStore require MediaStore delete flow below
+        }
+      }
+
+      if (!removed) {
+        val mediaUri = resolveDeletableMediaUri(srcUri)
+        if (mediaUri != null) {
+          if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            promptUris.add(mediaUri)
+          } else {
+            try {
+              val deletedRows = resolver.delete(mediaUri, null, null)
+              if (deletedRows > 0) {
+                silentDeleted++
+              } else {
+                failedCount++
+              }
+            } catch (sec: SecurityException) {
+              if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && sec is RecoverableSecurityException) {
+                promptUris.add(mediaUri)
+              } else {
+                failedCount++
+              }
+            } catch (_: Exception) {
+              failedCount++
+            }
+          }
+        } else {
+          failedCount++
+        }
+      }
+    }
+
+    if (promptUris.isEmpty()) {
+      promise.resolve(
+        Arguments.createMap().apply {
+          putInt("deletedCount", silentDeleted)
+          putBoolean("promptRequired", false)
+          putInt("failedCount", failedCount)
+        }
+      )
+      return
+    }
+
+    val activity = reactContext.currentActivity
+    if (activity == null || pendingDeletePromise != null) {
+      promise.resolve(
+        Arguments.createMap().apply {
+          putInt("deletedCount", silentDeleted)
+          putBoolean("promptRequired", false)
+          putInt("failedCount", failedCount + promptUris.size)
+        }
+      )
+      return
+    }
+
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+      try {
+        val deleteIntent = MediaStore.createDeleteRequest(resolver, promptUris)
+        pendingDeletePromise = promise
+        pendingDeletePromptCount = promptUris.size
+        pendingDeleteAlreadyDeleted = silentDeleted
+        pendingDeleteAlreadyFailed = failedCount
+        activity.startIntentSenderForResult(
+          deleteIntent.intentSender,
+          REQ_DELETE_SOURCE,
+          null,
+          0,
+          0,
+          0
+        )
+        return
+      } catch (_: Exception) {
+        pendingDeletePromise = null
+        pendingDeletePromptCount = 0
+        pendingDeleteAlreadyDeleted = 0
+        pendingDeleteAlreadyFailed = 0
+      }
+    } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+      val firstUri = promptUris.first()
+      val remainingCount = promptUris.size - 1
+      try {
+        resolver.delete(firstUri, null, null)
+        promise.resolve(
+          Arguments.createMap().apply {
+            putInt("deletedCount", silentDeleted + 1)
+            putBoolean("promptRequired", false)
+            putInt("failedCount", failedCount + remainingCount)
+          }
+        )
+        return
+      } catch (rse: RecoverableSecurityException) {
+        try {
+          pendingDeletePromise = promise
+          pendingDeletePromptCount = 1
+          pendingDeleteAlreadyDeleted = silentDeleted
+          pendingDeleteAlreadyFailed = failedCount + remainingCount
+          activity.startIntentSenderForResult(
+            rse.userAction.actionIntent.intentSender,
+            REQ_DELETE_SOURCE,
+            null,
+            0,
+            0,
+            0
+          )
+          return
+        } catch (_: Exception) {
+          pendingDeletePromise = null
+          pendingDeletePromptCount = 0
+          pendingDeleteAlreadyDeleted = 0
+          pendingDeleteAlreadyFailed = 0
+        }
+      } catch (_: Exception) {
+      }
+    }
+
+    promise.resolve(
+      Arguments.createMap().apply {
+        putInt("deletedCount", silentDeleted)
+        putBoolean("promptRequired", false)
+        putInt("failedCount", failedCount + promptUris.size)
+      }
+    )
+  }
+
+  private fun resolveDeletableMediaUri(uri: Uri): Uri? {
+    if (uri.authority == MediaStore.AUTHORITY) {
+      return uri
+    }
+
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+      try {
+        val mapped = MediaStore.getMediaUri(reactContext, uri)
+        if (mapped != null) return mapped
+      } catch (_: Exception) {
+      }
+    }
+
+    if (DocumentsContract.isDocumentUri(reactContext, uri) &&
+      uri.authority == "com.android.providers.media.documents"
+    ) {
+      val docId = DocumentsContract.getDocumentId(uri)
+      val parts = docId.split(":", limit = 2)
+      if (parts.size == 2) {
+        val type = parts[0]
+        val id = parts[1].toLongOrNull() ?: return null
+        return when (type) {
+          "image" -> ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id)
+          "video" -> ContentUris.withAppendedId(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, id)
+          "audio" -> ContentUris.withAppendedId(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, id)
+          else -> ContentUris.withAppendedId(MediaStore.Files.getContentUri("external"), id)
+        }
+      }
+    }
+
+    return null
+  }
+
   private fun collectUrisFromIntent(data: Intent): List<Uri> {
     val result = mutableListOf<Uri>()
     val clipData: ClipData? = data.clipData
@@ -849,6 +1076,7 @@ class MemoriesVaultModule(private val reactContext: ReactApplicationContext) :
   companion object {
     private const val REQ_PICK_FILES = 9101
     private const val REQ_CAPTURE_MEDIA = 9102
+    private const val REQ_DELETE_SOURCE = 9103
     private const val KEYSTORE_ALIAS = "lifeos_safe_vault_aes_key"
     private const val PREFS_NAME = "lifeos_vault_prefs"
     private const val PREF_BIO_IV = "bio_iv"
