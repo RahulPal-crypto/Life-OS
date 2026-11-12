@@ -2,6 +2,7 @@ import React from 'react';
 import { View, StyleSheet, Pressable, Image } from 'react-native';
 import { colors, spacing, borderRadius } from '../../../theme';
 import { Text } from '../../../components';
+import { images } from '../../../assets';
 import { parseAvatar } from '../../profile/utils/avatarHelper';
 
 interface DashboardHeaderProps {
@@ -31,10 +32,10 @@ export const DashboardHeader: React.FC<DashboardHeaderProps> = ({
     <View style={styles.container}>
       {/* 1. Top Navbar: Brand & Actions */}
       <View style={styles.navRow}>
-        {/* Brand: Sprout Icon + LIFE OS */}
+        {/* Brand: LifeOS Logo + LIFE OS */}
         <View style={styles.brandContainer}>
           <View style={styles.logoBadge}>
-            <Text style={styles.sproutIcon}>🌱</Text>
+            <Image source={images.logo} style={styles.logoImage} />
           </View>
           <Text variant="h2" color={colors.primary} style={styles.brandTitle}>
             LIFE OS
@@ -130,10 +131,11 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   logoBadge: {
-    width: 36,
-    height: 36,
+    width: 38,
+    height: 38,
     borderRadius: 12,
-    backgroundColor: '#7C3AED',
+    backgroundColor: '#030712',
+    overflow: 'hidden',
     alignItems: 'center',
     justifyContent: 'center',
     marginRight: spacing.sm,
@@ -143,8 +145,9 @@ const styles = StyleSheet.create({
     shadowRadius: 8,
     elevation: 4,
   },
-  sproutIcon: {
-    fontSize: 18,
+  logoImage: {
+    width: 38,
+    height: 38,
   },
   brandTitle: {
     fontSize: 20,
