@@ -187,7 +187,83 @@ export const runMigrations = async () => {
     ]);
     console.log(`[Migration] Table 'my_day_activities' verified.`);
 
-    console.log('[Migration] All 6 tables migrated successfully.');
+    // 9. Create 'memory_folders' table
+    await connection.query(`
+      CREATE TABLE IF NOT EXISTS memory_folders (
+        id VARCHAR(36) PRIMARY KEY,
+        user_id VARCHAR(36) NOT NULL,
+        parent_id VARCHAR(36) NULL,
+        name VARCHAR(100) NOT NULL,
+        color VARCHAR(20) DEFAULT '#7C3AED',
+        icon VARCHAR(16) DEFAULT '📁',
+        is_pinned TINYINT(1) DEFAULT 0,
+        is_vault TINYINT(1) DEFAULT 0,
+        is_trashed TINYINT(1) DEFAULT 0,
+        trashed_at BIGINT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        INDEX idx_memory_folders_user (user_id, is_vault, is_trashed, parent_id),
+        CONSTRAINT fk_memory_folders_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    `);
+    console.log(`[Migration] Table 'memory_folders' verified.`);
+
+    // 10. Create 'memory_items' table
+    await connection.query(`
+      CREATE TABLE IF NOT EXISTS memory_items (
+        id VARCHAR(36) PRIMARY KEY,
+        user_id VARCHAR(36) NOT NULL,
+        folder_id VARCHAR(36) NULL,
+        title VARCHAR(180) NOT NULL,
+        file_name VARCHAR(255) NOT NULL,
+        media_type ENUM('photo', 'video', 'document', 'audio', 'other') NOT NULL DEFAULT 'document',
+        mime_type VARCHAR(120) NULL,
+        size_bytes BIGINT DEFAULT 0,
+        local_uri TEXT NULL,
+        vault_uri TEXT NULL,
+        drive_file_id VARCHAR(180) NULL,
+        drive_synced TINYINT(1) DEFAULT 0,
+        story TEXT NULL,
+        memory_date DATE NOT NULL,
+        location VARCHAR(150) NULL,
+        people VARCHAR(255) NULL,
+        tags VARCHAR(255) NULL,
+        mood VARCHAR(40) NULL,
+        is_favorite TINYINT(1) DEFAULT 0,
+        is_vault TINYINT(1) DEFAULT 0,
+        is_trashed TINYINT(1) DEFAULT 0,
+        trashed_at BIGINT NULL,
+        linked_activity_id VARCHAR(36) NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        INDEX idx_memory_items_user_folder (user_id, is_vault, is_trashed, folder_id),
+        INDEX idx_memory_items_user_date (user_id, memory_date),
+        INDEX idx_memory_items_user_type (user_id, media_type),
+        CONSTRAINT fk_memory_items_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+        CONSTRAINT fk_memory_items_folder FOREIGN KEY (folder_id) REFERENCES memory_folders(id) ON DELETE SET NULL
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    `);
+    console.log(`[Migration] Table 'memory_items' verified.`);
+
+    // 11. Create 'memory_vault_settings' table
+    await connection.query(`
+      CREATE TABLE IF NOT EXISTS memory_vault_settings (
+        user_id VARCHAR(36) PRIMARY KEY,
+        pin_hash VARCHAR(255) NULL,
+        biometric_key_hash VARCHAR(255) NULL,
+        biometric_enabled TINYINT(1) DEFAULT 1,
+        failed_attempts INT DEFAULT 0,
+        locked_until BIGINT NULL,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        CONSTRAINT fk_memory_vault_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    `);
+    await ensureTableColumns(connection, 'memory_vault_settings', [
+      ['biometric_key_hash', 'VARCHAR(255) NULL'],
+    ]);
+    console.log(`[Migration] Table 'memory_vault_settings' verified.`);
+
+    console.log('[Migration] All 9 tables migrated successfully.');
     return true;
   } catch (error) {
     console.error('[Migration Error]:', error.message);

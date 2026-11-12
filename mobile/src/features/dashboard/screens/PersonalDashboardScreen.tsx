@@ -20,6 +20,7 @@ import { User } from '../../auth';
 interface PersonalDashboardScreenProps {
   user: User | null;
   onOpenMyDayTimeline: () => void;
+  onOpenMemories: () => void;
   onOpenProfile: () => void;
   onSwitchSpace: () => void;
   onLogout: () => void;
@@ -28,6 +29,7 @@ interface PersonalDashboardScreenProps {
 export const PersonalDashboardScreen: React.FC<PersonalDashboardScreenProps> = ({
   user,
   onOpenMyDayTimeline,
+  onOpenMemories,
   onOpenProfile,
   onSwitchSpace: _onSwitchSpace,
   onLogout: _onLogout,
@@ -79,11 +81,7 @@ export const PersonalDashboardScreen: React.FC<PersonalDashboardScreenProps> = (
         onOpenMyDayTimeline();
         break;
       case 'my-memories':
-        Alert.alert(
-          'My Memories',
-          'Your personal photo & video vault.\n\nPreparing media gallery integration!',
-          [{ text: 'OK' }]
-        );
+        onOpenMemories();
         break;
       case 'my-interview':
         Alert.alert('My Interview', 'AI interview prep & mock practice module.');

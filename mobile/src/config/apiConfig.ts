@@ -57,5 +57,14 @@ export const apiConfig = {
       metrics: '/my-day/metrics',
       history: '/my-day/history',
     },
+    memories: {
+      overview: '/memories',
+      folders: '/memories/folders',
+      items: '/memories/items',
+      bulk: '/memories/items/bulk',
+      vaultSetup: '/memories/vault/setup',
+      vaultUnlock: '/memories/vault/unlock',
+      vaultUnlockBiometric: '/memories/vault/unlock-biometric',
+    },
   },
 };

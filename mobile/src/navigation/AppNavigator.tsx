@@ -12,6 +12,7 @@ import { SpaceSelectionScreen } from '../features/spaces';
 import { AuthScreen, User, authService } from '../features/auth';
 import { PersonalDashboardScreen } from '../features/dashboard';
 import { MyDayScreen } from '../features/myDay';
+import { MyMemoriesScreen } from '../features/memories';
 import { ProfileScreen } from '../features/profile';
 import {
   UpdateAvailableModal,
@@ -26,6 +27,7 @@ export type CurrentScreen =
   | 'auth'
   | 'dashboard'
   | 'my-day'
+  | 'memories'
   | 'profile';
 
 export const AppNavigator: React.FC = () => {
@@ -270,6 +272,7 @@ export const AppNavigator: React.FC = () => {
           <PersonalDashboardScreen
             user={currentUser}
             onOpenMyDayTimeline={() => navigateTo('my-day')}
+            onOpenMemories={() => navigateTo('memories')}
             onOpenProfile={() => navigateTo('profile')}
             onSwitchSpace={() => navigateTo('space-selection')}
             onLogout={handleLogout}
@@ -297,7 +300,25 @@ export const AppNavigator: React.FC = () => {
         </Animated.View>
       )}
 
-      {/* 6. Account & Space Profile Screen */}
+      {/* 6. My Memories File Vault & Organizer */}
+      {currentScreen === 'memories' && (
+        <Animated.View
+          style={[
+            styles.fullScreen,
+            {
+              opacity: screenFade,
+              zIndex: 2,
+            },
+          ]}
+        >
+          <MyMemoriesScreen
+            user={currentUser}
+            onBackToDashboard={goBack}
+          />
+        </Animated.View>
+      )}
+
+      {/* 7. Account & Space Profile Screen */}
       {currentScreen === 'profile' && (
         <Animated.View
           style={[
