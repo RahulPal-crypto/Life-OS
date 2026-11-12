@@ -253,3 +253,66 @@ test('Validation rejects invalid calendar dates, oversized activity strings, and
   assert.ok(badMetricsJson.error.details.activeSteps);
   assert.ok(badMetricsJson.error.details.studyHours);
 });
+
+test('Timed activity auto-computes endsAt, keeps time slot visible, and stops cleanly', async () => {
+  const startedAt = Date.now();
+  const createRes = await fetch(`${baseUrl}/api/v1/my-day/activities`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${authToken}`,
+    },
+    body: JSON.stringify({
+      logDate: '2026-11-12',
+      category: 'meal',
+      title: 'Lunch Break',
+      durationMinutes: 15,
+      timestamp: startedAt,
+    }),
+  });
+
+  assert.strictEqual(createRes.status, 201);
+  const createdJson = await createRes.json();
+  assert.strictEqual(createdJson.data.durationMinutes, 15);
+  assert.strictEqual(createdJson.data.timerStatus, 'active');
+  assert.strictEqual(createdJson.data.endsAt, startedAt + 15 * 60_000);
+  assert.ok(createdJson.data.endTime);
+  assert.ok(createdJson.data.meta.includes('15 min'));
+
+  const stopRes = await fetch(`${baseUrl}/api/v1/my-day/activities/${createdJson.data.id}`, {
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${authToken}`,
+    },
+    body: JSON.stringify({
+      timerStatus: 'completed',
+      endsAt: startedAt + 10 * 60_000,
+    }),
+  });
+
+  assert.strictEqual(stopRes.status, 200);
+  const stopJson = await stopRes.json();
+  assert.strictEqual(stopJson.data.timerStatus, 'completed');
+  assert.strictEqual(stopJson.data.durationMinutes, 10);
+  assert.ok(stopJson.data.meta.includes('10 min'));
+
+  // Past-ended timed activity auto-completes immediately on creation/snapshot
+  const pastRes = await fetch(`${baseUrl}/api/v1/my-day/activities`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${authToken}`,
+    },
+    body: JSON.stringify({
+      logDate: '2026-11-12',
+      category: 'meal',
+      title: 'Past Coffee Break',
+      durationMinutes: 15,
+      timestamp: startedAt - 20 * 60_000,
+    }),
+  });
+  assert.strictEqual(pastRes.status, 201);
+  const pastJson = await pastRes.json();
+  assert.strictEqual(pastJson.data.timerStatus, 'completed');
+});

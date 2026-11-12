@@ -1,20 +1,30 @@
-import React from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { View, StyleSheet, Pressable } from 'react-native';
-import { colors, spacing, borderRadius } from '../../../theme';
+import { spacing, borderRadius } from '../../../theme';
 import { Text } from '../../../components';
+import { TimerStatus } from '../services/myDayService';
+import { formatCountdown } from '../services/activityTimerHelper';
 
 export interface TimelineEventItem {
   id: string;
   time: string;
+  timestamp?: number;
   icon: string;
   title: string;
   subtitle: string;
+  meta?: string | null;
+  durationMinutes?: number | null;
+  endsAt?: number | null;
+  endTime?: string | null;
+  timerStatus?: TimerStatus;
 }
 
 interface MyDayTimelineStreamProps {
   events: TimelineEventItem[];
   onViewAll?: () => void;
   onItemPress?: (item: TimelineEventItem) => void;
+  onStopTimer?: (item: TimelineEventItem) => void;
+  onTimerExpired?: (item: TimelineEventItem) => void;
 }
 
 const getIconBgColor = (icon: string) => {
@@ -31,7 +41,39 @@ export const MyDayTimelineStream: React.FC<MyDayTimelineStreamProps> = ({
   events = [],
   onViewAll,
   onItemPress,
+  onStopTimer,
+  onTimerExpired,
 }) => {
+  const [nowMs, setNowMs] = useState<number>(() => Date.now());
+  const expiredNotifiedRef = useRef<Set<string>>(new Set());
+
+  const hasActiveTimers = events.some(
+    (e) => e.timerStatus === 'active' && typeof e.endsAt === 'number'
+  );
+
+  useEffect(() => {
+    if (!hasActiveTimers) return;
+    setNowMs(Date.now());
+    const interval = setInterval(() => {
+      setNowMs(Date.now());
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [hasActiveTimers]);
+
+  useEffect(() => {
+    if (!onTimerExpired) return;
+    events.forEach((item) => {
+      if (
+        item.timerStatus === 'active' &&
+        typeof item.endsAt === 'number' &&
+        nowMs >= item.endsAt &&
+        !expiredNotifiedRef.current.has(item.id)
+      ) {
+        expiredNotifiedRef.current.add(item.id);
+        onTimerExpired(item);
+      }
+    });
+  }, [events, nowMs, onTimerExpired]);
   return (
     <View style={styles.container}>
       {/* Header Row */}
@@ -68,13 +110,31 @@ export const MyDayTimelineStream: React.FC<MyDayTimelineStreamProps> = ({
           {events.map((item, index) => {
             const isFirst = index === 0;
             const isLast = index === events.length - 1;
+            const remainingMs =
+              typeof item.endsAt === 'number' ? Math.max(0, item.endsAt - nowMs) : 0;
+            const isRunning = item.timerStatus === 'active' && remainingMs > 0;
+            const isCompleted =
+              item.timerStatus === 'completed' ||
+              (item.timerStatus === 'active' && remainingMs <= 0);
+            const timeRangeLabel =
+              item.endTime && item.durationMinutes
+                ? `${item.time} - ${item.endTime} (${item.durationMinutes} min)`
+                : item.endTime
+                  ? `${item.time} - ${item.endTime}`
+                  : null;
 
             return (
               <View key={item.id} style={styles.streamItemRow}>
                 {/* Left Column: Continuous Line + Purple Node */}
                 <View style={styles.trackColumn}>
                   {!isFirst && <View style={styles.trackLineTop} />}
-                  <View style={styles.purpleNode} />
+                  <View
+                    style={[
+                      styles.purpleNode,
+                      isRunning && styles.activeNode,
+                      isCompleted && styles.completedNode,
+                    ]}
+                  />
                   {!isLast && <View style={styles.trackLineBottom} />}
                 </View>
 
@@ -94,6 +154,7 @@ export const MyDayTimelineStream: React.FC<MyDayTimelineStreamProps> = ({
                   onPress={() => onItemPress && onItemPress(item)}
                   style={({ pressed }) => [
                     styles.eventCard,
+                    isRunning && styles.eventCardActive,
                     pressed && styles.cardPressed,
                   ]}
                 >
@@ -110,6 +171,39 @@ export const MyDayTimelineStream: React.FC<MyDayTimelineStreamProps> = ({
                     >
                       {item.title}
                     </Text>
+
+                    {isRunning && (
+                      <View style={styles.timerStatusRow}>
+                        <View style={styles.activeBadge}>
+                          <Text variant="caption" color="#0F766E" style={styles.activeBadgeText}>
+                            ACTIVE • {formatCountdown(remainingMs)} left
+                          </Text>
+                        </View>
+                        {onStopTimer && (
+                          <Pressable
+                            onPress={() => onStopTimer(item)}
+                            hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+                            style={styles.stopButton}
+                          >
+                            <Text variant="caption" color="#FFFFFF" style={styles.stopButtonText}>
+                              Stop
+                            </Text>
+                          </Pressable>
+                        )}
+                      </View>
+                    )}
+
+                    {isCompleted && timeRangeLabel && (
+                      <Text
+                        variant="caption"
+                        color="#6D28D9"
+                        numberOfLines={1}
+                        style={styles.completedSlotText}
+                      >
+                        Completed • {timeRangeLabel}
+                      </Text>
+                    )}
+
                     <Text
                       variant="caption"
                       color="#6B7280"
@@ -117,7 +211,7 @@ export const MyDayTimelineStream: React.FC<MyDayTimelineStreamProps> = ({
                       ellipsizeMode="tail"
                       style={styles.eventSubtitle}
                     >
-                      {item.subtitle}
+                      {isRunning && timeRangeLabel ? timeRangeLabel : item.subtitle}
                     </Text>
                   </View>
                 </Pressable>
@@ -190,6 +284,15 @@ const styles = StyleSheet.create({
     backgroundColor: '#7C3AED',
     zIndex: 2,
   },
+  activeNode: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    backgroundColor: '#0D9488',
+  },
+  completedNode: {
+    backgroundColor: '#6D28D9',
+  },
   /* Time Column */
   timeColumn: {
     width: 58,
@@ -219,6 +322,10 @@ const styles = StyleSheet.create({
     shadowRadius: 6,
     elevation: 2,
   },
+  eventCardActive: {
+    borderColor: '#5EEAD4',
+    backgroundColor: '#F0FDFA',
+  },
   cardPressed: {
     opacity: 0.85,
   },
@@ -247,6 +354,40 @@ const styles = StyleSheet.create({
     color: '#6B7280',
     fontWeight: '500',
     textTransform: 'none',
+  },
+  timerStatusRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginTop: 2,
+    marginBottom: 3,
+  },
+  activeBadge: {
+    backgroundColor: '#CCFBF1',
+    paddingHorizontal: 7,
+    paddingVertical: 2,
+    borderRadius: 6,
+  },
+  activeBadgeText: {
+    fontSize: 10.5,
+    fontWeight: '800',
+    letterSpacing: 0.2,
+  },
+  stopButton: {
+    backgroundColor: '#DC2626',
+    paddingHorizontal: 9,
+    paddingVertical: 3,
+    borderRadius: 6,
+    marginLeft: 8,
+  },
+  stopButtonText: {
+    fontSize: 10.5,
+    fontWeight: '700',
+  },
+  completedSlotText: {
+    fontSize: 10.5,
+    fontWeight: '700',
+    marginBottom: 2,
   },
   /* Clean Empty State */
   emptyContainer: {

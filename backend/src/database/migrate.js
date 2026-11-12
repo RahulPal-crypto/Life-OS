@@ -1,6 +1,20 @@
 import mysql from 'mysql2/promise';
 import { env, buildDbConnectionConfig } from '../config/env.js';
 
+const ensureTableColumns = async (connection, tableName, columns) => {
+  for (const [colName, colDef] of columns) {
+    const [cols] = await connection.execute(
+      `SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
+       WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND COLUMN_NAME = ? LIMIT 1`,
+      [env.db.database, tableName, colName]
+    );
+    if (cols.length === 0) {
+      await connection.query(`ALTER TABLE \`${tableName}\` ADD COLUMN \`${colName}\` ${colDef}`);
+      console.log(`[Migration] Added missing column '${tableName}.${colName}'.`);
+    }
+  }
+};
+
 export const runMigrations = async () => {
   console.log('[Migration] Starting LIFE OS Database Migration...');
   let connection;
@@ -62,25 +76,13 @@ export const runMigrations = async () => {
     `);
 
     // Ensure profile extension columns exist on older database instances
-    const userExtensionColumns = [
+    await ensureTableColumns(connection, 'users', [
       ['headline', 'VARCHAR(100) NULL'],
       ['bio', 'VARCHAR(250) NULL'],
       ['location', 'VARCHAR(100) NULL'],
       ['daily_focus_goal', 'DECIMAL(4,1) DEFAULT 8.0'],
       ['daily_steps_goal', 'INT DEFAULT 8000'],
-    ];
-
-    for (const [colName, colDef] of userExtensionColumns) {
-      const [cols] = await connection.execute(
-        `SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS
-         WHERE TABLE_SCHEMA = ? AND TABLE_NAME = 'users' AND COLUMN_NAME = ? LIMIT 1`,
-        [env.db.database, colName]
-      );
-      if (cols.length === 0) {
-        await connection.query(`ALTER TABLE users ADD COLUMN \`${colName}\` ${colDef}`);
-        console.log(`[Migration] Added missing column 'users.${colName}'.`);
-      }
-    }
+    ]);
     console.log(`[Migration] Table 'users' verified.`);
 
     // 4. Create 'user_sessions' table
@@ -167,6 +169,9 @@ export const runMigrations = async () => {
         details TEXT NULL,
         meta VARCHAR(150) NULL,
         icon VARCHAR(10) DEFAULT '☑️',
+        duration_minutes INT NULL,
+        ends_at BIGINT NULL,
+        timer_status ENUM('logged', 'active', 'completed') DEFAULT 'logged',
         is_auto_tracked TINYINT(1) DEFAULT 0,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -175,6 +180,11 @@ export const runMigrations = async () => {
         CONSTRAINT fk_activities_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
     `);
+    await ensureTableColumns(connection, 'my_day_activities', [
+      ['duration_minutes', 'INT NULL'],
+      ['ends_at', 'BIGINT NULL'],
+      ['timer_status', "ENUM('logged', 'active', 'completed') DEFAULT 'logged'"],
+    ]);
     console.log(`[Migration] Table 'my_day_activities' verified.`);
 
     console.log('[Migration] All 6 tables migrated successfully.');

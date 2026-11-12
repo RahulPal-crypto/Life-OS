@@ -124,9 +124,11 @@ export const validateHistoryDays = (rawDays) => {
   };
 };
 
+const VALID_TIMER_STATUSES = ['logged', 'active', 'completed'];
+
 export const validateCreateActivity = (body) => {
   const errors = {};
-  const { title, category, details, meta, timeString, timestamp, icon, logDate } = body || {};
+  const { title, category, details, meta, timeString, timestamp, icon, logDate, durationMinutes } = body || {};
 
   if (!title || typeof title !== 'string' || title.trim().length === 0) {
     errors.title = 'Activity title is required and cannot be empty.';
@@ -160,6 +162,19 @@ export const validateCreateActivity = (body) => {
     }
   }
 
+  let resolvedDurationMinutes = null;
+  if (durationMinutes !== undefined && durationMinutes !== null) {
+    const parsedDuration = parseStrictNumber(
+      durationMinutes,
+      'durationMinutes',
+      { min: 1, max: 720, integer: true },
+      errors
+    );
+    if (parsedDuration !== undefined) {
+      resolvedDurationMinutes = parsedDuration;
+    }
+  }
+
   const hasErrors = Object.keys(errors).length > 0;
   return {
     isValid: !hasErrors,
@@ -172,6 +187,7 @@ export const validateCreateActivity = (body) => {
       timeString: cleanTimeString,
       timestamp: resolvedTimestamp,
       icon: cleanIcon,
+      durationMinutes: resolvedDurationMinutes,
       logDate: dateRes.date || getTodayDateString(),
     },
   };
@@ -181,7 +197,7 @@ export const validateUpdateActivity = (body) => {
   const errors = {};
   const sanitized = {};
   const payload = body && typeof body === 'object' && !Array.isArray(body) ? body : {};
-  const { title, category, details, meta, timeString, icon } = payload;
+  const { title, category, details, meta, timeString, icon, timerStatus, endsAt, durationMinutes } = payload;
 
   if (title !== undefined) {
     if (typeof title !== 'string' || title.trim().length === 0) {
@@ -228,9 +244,28 @@ export const validateUpdateActivity = (body) => {
       sanitized.icon = parsedIcon;
     }
   }
+  if (timerStatus !== undefined) {
+    if (typeof timerStatus !== 'string' || !VALID_TIMER_STATUSES.includes(timerStatus.toLowerCase().trim())) {
+      errors.timerStatus = `Invalid timerStatus. Must be one of: ${VALID_TIMER_STATUSES.join(', ')}.`;
+    } else {
+      sanitized.timerStatus = timerStatus.toLowerCase().trim();
+    }
+  }
+  if (endsAt !== undefined && endsAt !== null) {
+    const parsedEndsAt = parseStrictNumber(endsAt, 'endsAt', { min: 1, integer: true }, errors);
+    if (parsedEndsAt !== undefined) {
+      sanitized.endsAt = parsedEndsAt;
+    }
+  }
+  if (durationMinutes !== undefined && durationMinutes !== null) {
+    const parsedDur = parseStrictNumber(durationMinutes, 'durationMinutes', { min: 1, max: 720, integer: true }, errors);
+    if (parsedDur !== undefined) {
+      sanitized.durationMinutes = parsedDur;
+    }
+  }
 
   if (Object.keys(errors).length === 0 && Object.keys(sanitized).length === 0) {
-    errors._form = 'At least one updatable field (title, category, details, meta, timeString, icon) is required.';
+    errors._form = 'At least one updatable field (title, category, details, meta, timeString, icon, timerStatus, endsAt, durationMinutes) is required.';
   }
 
   const hasErrors = Object.keys(errors).length > 0;

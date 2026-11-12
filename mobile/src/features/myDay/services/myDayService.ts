@@ -24,6 +24,8 @@ export interface TodayAtAGlanceData {
   activities: { count: number; badge: string };
 }
 
+export type TimerStatus = 'logged' | 'active' | 'completed';
+
 export interface DayTimelineItem {
   id: string;
   time: string;
@@ -34,6 +36,10 @@ export interface DayTimelineItem {
   meta?: string | null;
   icon: string;
   isAutoTracked?: boolean;
+  durationMinutes?: number | null;
+  endsAt?: number | null;
+  endTime?: string | null;
+  timerStatus?: TimerStatus;
 }
 
 export interface DaySnapshot {
@@ -52,6 +58,7 @@ export interface CreateActivityPayload {
   meta?: string;
   timeString?: string;
   icon?: string;
+  durationMinutes?: number;
 }
 
 export interface UpdateMetricsPayload {
@@ -91,6 +98,23 @@ class MyDayService {
       method: 'POST',
       body: JSON.stringify(payload),
     });
+    return json.data;
+  }
+
+  /**
+   * Mark a timed activity as completed (either early stop or auto-finish at endsAt)
+   */
+  async stopActivityTimer(activityId: string, endsAt?: number): Promise<DayTimelineItem> {
+    const json = await this.request(
+      `${apiConfig.endpoints.myDay.activities}/${encodeURIComponent(activityId)}`,
+      {
+        method: 'PUT',
+        body: JSON.stringify({
+          timerStatus: 'completed',
+          ...(typeof endsAt === 'number' ? { endsAt } : {}),
+        }),
+      }
+    );
     return json.data;
   }
 

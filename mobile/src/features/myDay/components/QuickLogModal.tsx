@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   View,
   StyleSheet,
@@ -14,16 +14,19 @@ import { colors, spacing, borderRadius } from '../../../theme';
 import { Text, Button } from '../../../components';
 import { InputField } from '../../auth/components/InputField';
 import { ActivityCategory } from '../services/timelineService';
+import { formatClockTime } from '../services/activityTimerHelper';
 
 interface QuickLogModalProps {
   visible: boolean;
   onClose: () => void;
+  defaultCategory?: ActivityCategory;
   onSave: (entry: {
     category: ActivityCategory;
     title: string;
     details?: string;
     meta?: string;
     time: string;
+    durationMinutes?: number;
   }) => void;
 }
 
@@ -35,25 +38,61 @@ const CATEGORIES: Array<{ key: ActivityCategory; label: string }> = [
   { key: 'note', label: 'Quick Note' },
 ];
 
+const DURATION_PRESETS: Array<{ label: string; minutes: number | null | 'custom' }> = [
+  { label: 'No Timer', minutes: null },
+  { label: '15m', minutes: 15 },
+  { label: '30m', minutes: 30 },
+  { label: '45m', minutes: 45 },
+  { label: '60m', minutes: 60 },
+  { label: 'Custom', minutes: 'custom' },
+];
+
 export const QuickLogModal: React.FC<QuickLogModalProps> = ({
   visible,
   onClose,
+  defaultCategory,
   onSave,
 }) => {
-  const [selectedCategory, setSelectedCategory] = useState<ActivityCategory>('focus');
+  const [selectedCategory, setSelectedCategory] = useState<ActivityCategory>(defaultCategory || 'focus');
   const [title, setTitle] = useState('');
   const [details, setDetails] = useState('');
   const [meta, setMeta] = useState('');
+  const [timerSelection, setTimerSelection] = useState<number | null | 'custom'>(null);
+  const [customMinutes, setCustomMinutes] = useState('');
   const [error, setError] = useState('');
+
+  useEffect(() => {
+    if (visible && defaultCategory) {
+      setSelectedCategory(defaultCategory);
+    }
+  }, [visible, defaultCategory]);
 
   const formatCurrentTime = () => {
     const now = new Date();
     return now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   };
 
+  const getResolvedDurationMinutes = (): number | undefined => {
+    if (timerSelection === null) return undefined;
+    if (timerSelection === 'custom') {
+      const parsed = Number(customMinutes.trim());
+      if (!Number.isInteger(parsed) || parsed < 1 || parsed > 720) {
+        return NaN;
+      }
+      return parsed;
+    }
+    return timerSelection;
+  };
+
   const handleSave = () => {
     if (!title.trim()) {
       setError('Title is required');
+      return;
+    }
+
+    const durationMinutes = getResolvedDurationMinutes();
+    if (durationMinutes !== undefined && Number.isNaN(durationMinutes)) {
+      setError('Enter custom timer minutes between 1 and 720');
       return;
     }
 
@@ -63,15 +102,25 @@ export const QuickLogModal: React.FC<QuickLogModalProps> = ({
       details: details.trim() || undefined,
       meta: meta.trim() || undefined,
       time: formatCurrentTime(),
+      durationMinutes,
     });
 
     // Reset
     setTitle('');
     setDetails('');
     setMeta('');
+    setTimerSelection(null);
+    setCustomMinutes('');
     setError('');
     onClose();
   };
+
+  const resolvedPreviewMinutes = getResolvedDurationMinutes();
+  const hasValidPreview =
+    typeof resolvedPreviewMinutes === 'number' && !Number.isNaN(resolvedPreviewMinutes);
+  const previewEndTime = hasValidPreview
+    ? formatClockTime(Date.now() + resolvedPreviewMinutes * 60_000)
+    : null;
 
   return (
     <Modal
@@ -166,6 +215,58 @@ export const QuickLogModal: React.FC<QuickLogModalProps> = ({
                 value={meta}
                 onChangeText={setMeta}
               />
+
+              {/* Auto-Stop Timer Selector */}
+              <Text variant="caption" color={colors.textSecondary} style={styles.sectionLabel}>
+                AUTO-STOP TIMER (OPTIONAL)
+              </Text>
+              <View style={styles.categoryRow}>
+                {DURATION_PRESETS.map((preset) => {
+                  const isActive = timerSelection === preset.minutes;
+                  return (
+                    <Pressable
+                      key={preset.label}
+                      onPress={() => {
+                        setTimerSelection(preset.minutes);
+                        if (error) setError('');
+                      }}
+                      style={[
+                        styles.categoryChip,
+                        isActive && styles.categoryChipActive,
+                      ]}
+                    >
+                      <Text
+                        variant="caption"
+                        color={isActive ? '#FFFFFF' : '#475569'}
+                        style={[styles.chipText, isActive && styles.chipTextActive]}
+                      >
+                        {preset.label}
+                      </Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+
+              {timerSelection === 'custom' && (
+                <InputField
+                  label="Custom Minutes (1 - 720)"
+                  placeholder="e.g. 20"
+                  keyboardType="numeric"
+                  value={customMinutes}
+                  onChangeText={(val) => {
+                    setCustomMinutes(val.replace(/[^0-9]/g, ''));
+                    if (error) setError('');
+                  }}
+                />
+              )}
+
+              {previewEndTime && (
+                <View style={styles.timerHintBox}>
+                  <Text variant="caption" color="#0F766E" style={styles.timerHintText}>
+                    Auto-stops at {previewEndTime} with an alarm beep; time slot stays saved in your log.
+                  </Text>
+                </View>
+              )}
 
               {/* Action Buttons */}
               <View style={styles.buttonRow}>
@@ -265,6 +366,20 @@ const styles = StyleSheet.create({
   },
   chipTextActive: {
     color: '#FFFFFF',
+  },
+  timerHintBox: {
+    backgroundColor: '#F0FDFA',
+    borderColor: '#99F6E4',
+    borderWidth: 1,
+    borderRadius: borderRadius.md,
+    paddingHorizontal: spacing.sm + 2,
+    paddingVertical: spacing.xs + 2,
+    marginBottom: spacing.md,
+  },
+  timerHintText: {
+    fontSize: 12,
+    fontWeight: '600',
+    lineHeight: 17,
   },
   buttonRow: {
     flexDirection: 'row',

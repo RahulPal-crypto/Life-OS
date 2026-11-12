@@ -5,7 +5,6 @@ import {
   ScrollView,
   Alert,
 } from 'react-native';
-import { colors, spacing } from '../../../theme';
 import { ScreenContainer } from '../../../components';
 import { DashboardHeader } from '../components/DashboardHeader';
 import { ProgressAndMoodCards } from '../components/ProgressAndMoodCards';
@@ -15,6 +14,7 @@ import { FloatingBottomNav, DashboardNavTab } from '../components/FloatingBottom
 import { QuickLogModal } from '../../myDay/components/QuickLogModal';
 import { myDayService } from '../../myDay/services/myDayService';
 import { ActivityCategory } from '../../myDay/services/timelineService';
+import { scheduleCompletionAlarm } from '../../myDay/services/activityTimerHelper';
 import { User } from '../../auth';
 
 interface PersonalDashboardScreenProps {
@@ -64,7 +64,7 @@ export const PersonalDashboardScreen: React.FC<PersonalDashboardScreenProps> = (
           mood: snapshot.metrics.mood || 'Productive',
         });
       }
-    } catch (_) {
+    } catch {
       // Graceful fallback without hardcoded fake data
     }
   }, [user?.dailyFocusGoal]);
@@ -125,26 +125,42 @@ export const PersonalDashboardScreen: React.FC<PersonalDashboardScreenProps> = (
     details?: string;
     meta?: string;
     time: string;
+    durationMinutes?: number;
   }) => {
     try {
       const now = new Date();
       const dateStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
 
-      await myDayService.createActivity({
+      const created = await myDayService.createActivity({
         logDate: dateStr,
         category: entry.category,
         title: entry.title,
         details: entry.details,
         meta: entry.meta,
         timeString: entry.time,
+        durationMinutes: entry.durationMinutes,
       });
+
+      if (created.timerStatus === 'active' && created.endsAt) {
+        await scheduleCompletionAlarm(
+          created.id,
+          created.title,
+          created.durationMinutes || entry.durationMinutes || 0,
+          created.endsAt
+        );
+      }
 
       // Reload dashboard metrics
       loadDashboardData();
 
+      const saveMessage =
+        created.timerStatus === 'active' && created.endTime && created.durationMinutes
+          ? `"${entry.title}" timer started for ${created.durationMinutes} min. It will auto-stop at ${created.endTime} with a beep alert.`
+          : `"${entry.title}" has been recorded into today's timeline!`;
+
       Alert.alert(
         'Activity Saved',
-        `"${entry.title}" has been recorded into today's timeline!`,
+        saveMessage,
         [
           {
             text: 'View Timeline',
@@ -233,6 +249,7 @@ export const PersonalDashboardScreen: React.FC<PersonalDashboardScreenProps> = (
         {/* Quick Log Modal */}
         <QuickLogModal
           visible={quickLogModalVisible}
+          defaultCategory={quickLogDefaultCategory}
           onClose={() => setQuickLogModalVisible(false)}
           onSave={handleSaveActivity}
         />

@@ -7,7 +7,7 @@ import {
   ActivityIndicator,
   RefreshControl,
 } from 'react-native';
-import { colors, spacing } from '../../../theme';
+import { spacing } from '../../../theme';
 import { ScreenContainer } from '../../../components';
 import { MyDayTopBar } from '../components/MyDayTopBar';
 import { DateSelector } from '../components/DateSelector';
@@ -17,6 +17,12 @@ import { TodayAtAGlance } from '../components/TodayAtAGlance';
 import { MyDayTimelineStream, TimelineEventItem } from '../components/MyDayTimelineStream';
 import { QuickLogModal } from '../components/QuickLogModal';
 import { myDayService, DaySnapshot, GlanceItem } from '../services/myDayService';
+import {
+  scheduleCompletionAlarm,
+  cancelCompletionAlarm,
+  playTimerEndBeep,
+  stopTimerEndSound,
+} from '../services/activityTimerHelper';
 import { User } from '../../auth';
 
 interface MyDayScreenProps {
@@ -34,10 +40,10 @@ const formatDateToYYYYMMDD = (d: Date): string => {
 };
 
 export const MyDayScreen: React.FC<MyDayScreenProps> = ({
-  user,
+  user: _user,
   onBackToDashboard,
-  onSwitchSpace,
-  onLogout,
+  onSwitchSpace: _onSwitchSpace,
+  onLogout: _onLogout,
 }) => {
   // Use today's real current date
   const [currentDate, setCurrentDate] = useState<Date>(new Date());
@@ -97,12 +103,25 @@ export const MyDayScreen: React.FC<MyDayScreenProps> = ({
       const mappedEvents: TimelineEventItem[] = (snapshot.timeline || []).map(a => ({
         id: a.id,
         time: a.time,
+        timestamp: a.timestamp,
         icon: a.icon || '☑️',
         title: a.title,
         subtitle: a.subtitle || a.meta || 'Activity logged in My Day',
+        meta: a.meta,
+        durationMinutes: a.durationMinutes ?? null,
+        endsAt: a.endsAt ?? null,
+        endTime: a.endTime ?? null,
+        timerStatus: a.timerStatus || 'logged',
       }));
 
       setEvents(mappedEvents);
+
+      // Re-sync native completion alarms for any active timers still running
+      mappedEvents.forEach((ev) => {
+        if (ev.timerStatus === 'active' && ev.endsAt && ev.endsAt > Date.now()) {
+          scheduleCompletionAlarm(ev.id, ev.title, ev.durationMinutes || 0, ev.endsAt);
+        }
+      });
     } catch (err: any) {
       console.warn('[MyDayScreen] Error fetching snapshot:', err.message);
       // If error occurs, keep UI clean without dummy data
@@ -134,6 +153,7 @@ export const MyDayScreen: React.FC<MyDayScreenProps> = ({
     details?: string;
     meta?: string;
     time: string;
+    durationMinutes?: number;
   }) => {
     const dateStr = formatDateToYYYYMMDD(currentDate);
 
@@ -145,15 +165,31 @@ export const MyDayScreen: React.FC<MyDayScreenProps> = ({
         details: newEntry.details,
         meta: newEntry.meta,
         timeString: newEntry.time,
+        durationMinutes: newEntry.durationMinutes,
       });
+
+      if (created.timerStatus === 'active' && created.endsAt) {
+        await scheduleCompletionAlarm(
+          created.id,
+          created.title,
+          created.durationMinutes || newEntry.durationMinutes || 0,
+          created.endsAt
+        );
+      }
 
       // Add to timeline
       const newItem: TimelineEventItem = {
         id: created.id,
         time: created.time,
+        timestamp: created.timestamp,
         icon: created.icon || '☑️',
         title: created.title,
         subtitle: created.subtitle || created.meta || 'Activity logged in My Day',
+        meta: created.meta,
+        durationMinutes: created.durationMinutes ?? null,
+        endsAt: created.endsAt ?? null,
+        endTime: created.endTime ?? null,
+        timerStatus: created.timerStatus || 'logged',
       };
 
       setEvents(prev => [...prev, newItem]);
@@ -165,8 +201,50 @@ export const MyDayScreen: React.FC<MyDayScreenProps> = ({
     }
   };
 
+  const handleStopTimer = useCallback(async (item: TimelineEventItem) => {
+    try {
+      await cancelCompletionAlarm(item.id);
+      await myDayService.stopActivityTimer(item.id, Date.now());
+      loadDayData(true);
+    } catch (err: any) {
+      Alert.alert('Stop Timer Failed', err.message || 'Could not stop the active timer.');
+    }
+  }, [loadDayData]);
+
+  const handleTimerExpired = useCallback(async (item: TimelineEventItem) => {
+    await cancelCompletionAlarm(item.id);
+    await playTimerEndBeep();
+
+    try {
+      await myDayService.stopActivityTimer(item.id, item.endsAt || undefined);
+    } catch {
+      // Backend getDaySnapshot also auto-completes expired active timers
+    }
+
+    loadDayData(true);
+
+    const slotText =
+      item.endTime && item.durationMinutes
+        ? `${item.time} - ${item.endTime} (${item.durationMinutes} min)`
+        : item.time;
+
+    Alert.alert(
+      'Timer Completed',
+      `"${item.title}" has finished and stopped automatically.\n\nLogged slot: ${slotText}`,
+      [
+        {
+          text: 'OK',
+          onPress: () => {
+            stopTimerEndSound();
+          },
+        },
+      ]
+    );
+  }, [loadDayData]);
+
   const handleDeleteActivity = async (activityId: string) => {
     try {
+      await cancelCompletionAlarm(activityId);
       await myDayService.deleteActivity(activityId);
       setEvents(prev => prev.filter(e => e.id !== activityId));
       loadDayData(true);
@@ -176,18 +254,26 @@ export const MyDayScreen: React.FC<MyDayScreenProps> = ({
   };
 
   const handleItemPress = (item: TimelineEventItem) => {
-    Alert.alert(
-      item.title,
-      `${item.time}\n\n${item.subtitle}`,
-      [
-        {
-          text: 'Delete Activity',
-          style: 'destructive',
-          onPress: () => handleDeleteActivity(item.id),
-        },
-        { text: 'Close', style: 'cancel' },
-      ]
-    );
+    const timeSummary =
+      item.endTime && item.durationMinutes
+        ? `${item.time} - ${item.endTime} (${item.durationMinutes} min)`
+        : item.time;
+
+    const actions: Array<{ text: string; style?: 'default' | 'cancel' | 'destructive'; onPress?: () => void }> = [];
+    if (item.timerStatus === 'active') {
+      actions.push({
+        text: 'Stop Timer Now',
+        onPress: () => handleStopTimer(item),
+      });
+    }
+    actions.push({
+      text: 'Delete Activity',
+      style: 'destructive',
+      onPress: () => handleDeleteActivity(item.id),
+    });
+    actions.push({ text: 'Close', style: 'cancel' });
+
+    Alert.alert(item.title, `${timeSummary}\n\n${item.subtitle}`, actions);
   };
 
   const renderGlanceDetails = (title: string, count: number, items: GlanceItem[], emptyMessage: string) => {
@@ -288,6 +374,8 @@ export const MyDayScreen: React.FC<MyDayScreenProps> = ({
                 events={events}
                 onViewAll={() => setQuickLogVisible(true)}
                 onItemPress={handleItemPress}
+                onStopTimer={handleStopTimer}
+                onTimerExpired={handleTimerExpired}
               />
             </>
           )}

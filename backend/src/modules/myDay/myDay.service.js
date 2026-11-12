@@ -47,6 +47,38 @@ const formatDateToReadable = (dateValue) => {
   });
 };
 
+const ACTIVITY_SELECT_COLUMNS =
+  'id, log_date, time_string, timestamp, category, title, details, meta, icon, duration_minutes, ends_at, timer_status, is_auto_tracked, created_at';
+
+const formatDurationMeta = (startTs, endTs, durationMinutes) =>
+  `${formatTimeFromTimestamp(startTs)} – ${formatTimeFromTimestamp(endTs)} • ${durationMinutes} min`;
+
+const formatActivityRow = (a, now = Date.now()) => {
+  const timestamp = Number(a.timestamp);
+  const durationMinutes = a.duration_minutes !== null && a.duration_minutes !== undefined
+    ? Number(a.duration_minutes)
+    : null;
+  const endsAt = a.ends_at !== null && a.ends_at !== undefined ? Number(a.ends_at) : null;
+  const rawStatus = a.timer_status || 'logged';
+  const timerStatus = rawStatus === 'active' && endsAt !== null && now >= endsAt ? 'completed' : rawStatus;
+
+  return {
+    id: a.id,
+    time: a.time_string,
+    timestamp,
+    durationMinutes,
+    endsAt,
+    endTime: endsAt ? formatTimeFromTimestamp(endsAt) : null,
+    timerStatus,
+    category: a.category,
+    title: a.title,
+    subtitle: a.details || a.meta || 'Activity logged in My Day',
+    meta: a.meta,
+    icon: a.icon,
+    isAutoTracked: Boolean(a.is_auto_tracked),
+  };
+};
+
 export class MyDayService {
   /**
    * Ensure a summary record exists for a user on a given date (concurrency-safe).
@@ -79,12 +111,20 @@ export class MyDayService {
    * Get full My Day snapshot for a given date
    */
   static async getDaySnapshot(userId, logDate) {
-    // 1. Get or create summary
+    // 1. Get or create summary & auto-complete any expired timers for this date
+    const now = Date.now();
     const summary = await this.getOrCreateSummary(userId, logDate);
+
+    await query(
+      `UPDATE my_day_activities
+       SET timer_status = 'completed'
+       WHERE user_id = ? AND log_date = ? AND timer_status = 'active' AND ends_at IS NOT NULL AND ends_at <= ?`,
+      [userId, logDate, now]
+    );
 
     // 2. Get all timeline activities for that date
     const activities = await query(
-      `SELECT id, log_date, time_string, timestamp, category, title, details, meta, icon, is_auto_tracked, created_at
+      `SELECT ${ACTIVITY_SELECT_COLUMNS}
        FROM my_day_activities
        WHERE user_id = ? AND log_date = ?
        ORDER BY timestamp ASC`,
@@ -129,17 +169,7 @@ export class MyDayService {
           badge: `${totalActivities} activities`,
         },
       },
-      timeline: activities.map((a) => ({
-        id: a.id,
-        time: a.time_string,
-        timestamp: Number(a.timestamp),
-        category: a.category,
-        title: a.title,
-        subtitle: a.details || 'Activity logged in My Day',
-        meta: a.meta,
-        icon: a.icon,
-        isAutoTracked: Boolean(a.is_auto_tracked),
-      })),
+      timeline: activities.map((a) => formatActivityRow(a, now)),
     };
   }
 
@@ -147,12 +177,18 @@ export class MyDayService {
    * Create a new timeline activity and automatically update daily metrics
    */
   static async createActivity(userId, data) {
-    const { logDate, title, category, details, meta, timeString, timestamp, icon } = data;
+    const { logDate, title, category, details, meta, timeString, timestamp, icon, durationMinutes } = data;
 
     const activityId = randomUUID();
     const resolvedTimestamp = timestamp || Date.now();
     const resolvedTimeString = timeString || formatTimeFromTimestamp(resolvedTimestamp);
     const resolvedIcon = icon || CATEGORY_ICONS[category] || '☑️';
+    const hasTimer = Number.isInteger(durationMinutes) && durationMinutes > 0;
+    const resolvedEndsAt = hasTimer ? resolvedTimestamp + durationMinutes * 60_000 : null;
+    const resolvedTimerStatus = hasTimer
+      ? (resolvedEndsAt <= Date.now() ? 'completed' : 'active')
+      : 'logged';
+    const resolvedMeta = meta || (hasTimer ? formatDurationMeta(resolvedTimestamp, resolvedEndsAt, durationMinutes) : null);
 
     const activity = await withTransaction(async (txQuery) => {
       // Ensure summary row exists before inserting/auto-updating study metrics
@@ -160,8 +196,8 @@ export class MyDayService {
 
       await txQuery(
         `INSERT INTO my_day_activities
-          (id, user_id, log_date, time_string, timestamp, category, title, details, meta, icon, is_auto_tracked)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
+          (id, user_id, log_date, time_string, timestamp, category, title, details, meta, icon, duration_minutes, ends_at, timer_status, is_auto_tracked)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)`,
         [
           activityId,
           userId,
@@ -171,29 +207,37 @@ export class MyDayService {
           category,
           title,
           details || null,
-          meta || null,
+          resolvedMeta,
           resolvedIcon,
+          hasTimer ? durationMinutes : null,
+          resolvedEndsAt,
+          resolvedTimerStatus,
         ]
       );
 
-      // Auto-update summary metrics if applicable (e.g. parsing "2.0 hrs" from meta for focus/work)
-      if (category === 'focus' && meta) {
-        const match = meta.match(/([\d.]+)\s*hr/i);
-        if (match) {
-          const hours = parseFloat(match[1]);
-          if (Number.isFinite(hours) && hours > 0 && hours <= 24) {
-            await txQuery(
-              `UPDATE my_day_summaries
-               SET study_hours = LEAST(999.9, study_hours + ?)
-               WHERE user_id = ? AND log_date = ?`,
-              [hours, userId, logDate]
-            );
-          }
+      // Auto-update summary metrics if applicable (from explicit "X hrs" meta or focus timer duration)
+      let addedHours = 0;
+      const metaHourMatch = meta ? meta.match(/([\d.]+)\s*hr/i) : null;
+      if (category === 'focus' && metaHourMatch) {
+        const hours = parseFloat(metaHourMatch[1]);
+        if (Number.isFinite(hours) && hours > 0 && hours <= 24) {
+          addedHours = hours;
         }
+      } else if (category === 'focus' && hasTimer) {
+        addedHours = Math.round((durationMinutes / 60) * 10) / 10;
+      }
+
+      if (addedHours > 0) {
+        await txQuery(
+          `UPDATE my_day_summaries
+           SET study_hours = LEAST(999.9, study_hours + ?)
+           WHERE user_id = ? AND log_date = ?`,
+          [addedHours, userId, logDate]
+        );
       }
 
       const created = await txQuery(
-        `SELECT id, log_date, time_string, timestamp, category, title, details, meta, icon, is_auto_tracked, created_at
+        `SELECT ${ACTIVITY_SELECT_COLUMNS}
          FROM my_day_activities
          WHERE id = ? LIMIT 1`,
         [activityId]
@@ -202,25 +246,17 @@ export class MyDayService {
       return created[0];
     });
 
-    return {
-      id: activity.id,
-      time: activity.time_string,
-      timestamp: Number(activity.timestamp),
-      category: activity.category,
-      title: activity.title,
-      subtitle: activity.details || 'Activity logged in My Day',
-      meta: activity.meta,
-      icon: activity.icon,
-      isAutoTracked: Boolean(activity.is_auto_tracked),
-    };
+    return formatActivityRow(activity);
   }
 
   /**
-   * Update an existing activity
+   * Update an existing activity (supports completing/stopping active timers)
    */
   static async updateActivity(userId, activityId, updates) {
     const existing = await query(
-      'SELECT id, user_id FROM my_day_activities WHERE id = ? AND user_id = ? LIMIT 1',
+      `SELECT id, user_id, timestamp, time_string, duration_minutes, ends_at, timer_status, meta
+       FROM my_day_activities
+       WHERE id = ? AND user_id = ? LIMIT 1`,
       [activityId, userId]
     );
 
@@ -231,32 +267,62 @@ export class MyDayService {
       throw err;
     }
 
+    const current = existing[0];
+    const effectiveUpdates = { ...updates };
+
+    // When stopping/completing a timed activity, clamp endsAt and preserve accurate start–end log
+    if (effectiveUpdates.timerStatus === 'completed' && current.duration_minutes !== null) {
+      const startTs = Number(current.timestamp);
+      const scheduledEndTs = current.ends_at ? Number(current.ends_at) : Date.now();
+      const requestedEndTs = effectiveUpdates.endsAt || Date.now();
+      const clampedEndTs = Math.max(startTs, Math.min(requestedEndTs, scheduledEndTs));
+      const actualMinutes = Math.max(1, Math.round((clampedEndTs - startTs) / 60_000));
+
+      effectiveUpdates.endsAt = clampedEndTs;
+      effectiveUpdates.durationMinutes = effectiveUpdates.durationMinutes ?? actualMinutes;
+      if (effectiveUpdates.meta === undefined) {
+        effectiveUpdates.meta = formatDurationMeta(startTs, clampedEndTs, effectiveUpdates.durationMinutes);
+      }
+    }
+
     const updateFields = [];
     const updateValues = [];
 
-    if (updates.title !== undefined) {
+    if (effectiveUpdates.title !== undefined) {
       updateFields.push('title = ?');
-      updateValues.push(updates.title);
+      updateValues.push(effectiveUpdates.title);
     }
-    if (updates.category !== undefined) {
+    if (effectiveUpdates.category !== undefined) {
       updateFields.push('category = ?');
-      updateValues.push(updates.category);
+      updateValues.push(effectiveUpdates.category);
     }
-    if (updates.details !== undefined) {
+    if (effectiveUpdates.details !== undefined) {
       updateFields.push('details = ?');
-      updateValues.push(updates.details);
+      updateValues.push(effectiveUpdates.details);
     }
-    if (updates.meta !== undefined) {
+    if (effectiveUpdates.meta !== undefined) {
       updateFields.push('meta = ?');
-      updateValues.push(updates.meta);
+      updateValues.push(effectiveUpdates.meta);
     }
-    if (updates.timeString !== undefined) {
+    if (effectiveUpdates.timeString !== undefined) {
       updateFields.push('time_string = ?');
-      updateValues.push(updates.timeString);
+      updateValues.push(effectiveUpdates.timeString);
     }
-    if (updates.icon !== undefined) {
+    if (effectiveUpdates.icon !== undefined) {
       updateFields.push('icon = ?');
-      updateValues.push(updates.icon);
+      updateValues.push(effectiveUpdates.icon);
+    }
+    if (effectiveUpdates.timerStatus !== undefined) {
+      updateFields.push('timer_status = ?');
+      updateValues.push(effectiveUpdates.timerStatus);
+    }
+    if (effectiveUpdates.endsAt !== undefined) {
+      updateFields.push('ends_at = ?');
+      updateValues.push(effectiveUpdates.endsAt);
+    }
+    if (effectiveUpdates.durationMinutes !== undefined) {
+      updateFields.push('duration_minutes = ?');
+      updateValues.push(effectiveUpdates.durationMinutes);
     }
 
     if (updateFields.length > 0) {
@@ -268,24 +334,13 @@ export class MyDayService {
     }
 
     const updated = await query(
-      `SELECT id, log_date, time_string, timestamp, category, title, details, meta, icon, is_auto_tracked, created_at
+      `SELECT ${ACTIVITY_SELECT_COLUMNS}
        FROM my_day_activities
        WHERE id = ? LIMIT 1`,
       [activityId]
     );
 
-    const a = updated[0];
-    return {
-      id: a.id,
-      time: a.time_string,
-      timestamp: Number(a.timestamp),
-      category: a.category,
-      title: a.title,
-      subtitle: a.details || 'Activity logged in My Day',
-      meta: a.meta,
-      icon: a.icon,
-      isAutoTracked: Boolean(a.is_auto_tracked),
-    };
+    return formatActivityRow(updated[0]);
   }
 
   /**
