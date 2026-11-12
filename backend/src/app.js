@@ -5,6 +5,7 @@ import { env } from './config/env.js';
 import authRoutes from './modules/auth/auth.routes.js';
 import profileRoutes from './modules/profile/profile.routes.js';
 import myDayRoutes from './modules/myDay/myDay.routes.js';
+import appRoutes from './modules/app/app.routes.js';
 import { notFoundHandler, errorHandler } from './middlewares/errorHandler.js';
 import { apiRateLimiter } from './middlewares/rateLimiter.js';
 import { sendSuccess, sendError } from './utils/apiResponse.js';
@@ -46,7 +47,7 @@ app.get('/health', async (req, res) => {
 app.get(env.apiPrefix, (req, res) => {
   return sendSuccess(res, 'Welcome to LIFE OS Modular Monolith API v1.', {
     documentation: '/api/v1/docs',
-    availableModules: ['auth', 'profile', 'my-day'],
+    availableModules: ['auth', 'profile', 'my-day', 'app'],
   });
 });
 
@@ -55,6 +56,7 @@ app.use(env.apiPrefix, apiRateLimiter);
 app.use(`${env.apiPrefix}/auth`, authRoutes);
 app.use(`${env.apiPrefix}/profile`, profileRoutes);
 app.use(`${env.apiPrefix}/my-day`, myDayRoutes);
+app.use(`${env.apiPrefix}/app`, appRoutes);
 
 // Fallback & Error Handling Middlewares
 app.use(notFoundHandler);

@@ -1,0 +1,135 @@
+name: Build & Release Android APK
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'mobile/**'
+      - '.github/workflows/android-release.yml'
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      release_notes:
+        description: 'Optional release notes shown in the in-app update dialog'
+        required: false
+        default: 'Bug fixes and performance improvements.'
+      force_update:
+        description: 'Require users to update before continuing'
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  build-android-release:
+    name: Build Signed Release APK
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Read Android versionCode and versionName
+        id: version
+        run: |
+          VERSION_CODE=$(grep -E "versionCode\s+[0-9]+" mobile/android/app/build.gradle | head -n1 | grep -oE "[0-9]+")
+          VERSION_NAME=$(grep -E 'versionName\s+"[^"]+"' mobile/android/app/build.gradle | head -n1 | sed -E 's/.*"([^"]+)".*/\1/')
+          TAG_NAME="v${VERSION_NAME}"
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            TAG_NAME="${GITHUB_REF_NAME}"
+          fi
+          echo "version_code=${VERSION_CODE}" >> "$GITHUB_OUTPUT"
+          echo "version_name=${VERSION_NAME}" >> "$GITHUB_OUTPUT"
+          echo "tag_name=${TAG_NAME}" >> "$GITHUB_OUTPUT"
+          echo "apk_name=LifeOS-v${VERSION_NAME}-c${VERSION_CODE}.apk" >> "$GITHUB_OUTPUT"
+          echo "Detected versionName=${VERSION_NAME}, versionCode=${VERSION_CODE}, tag=${TAG_NAME}"
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: mobile/package-lock.json
+
+      - name: Install mobile dependencies & verify JS/TS
+        working-directory: mobile
+        run: |
+          npm ci
+          npx tsc --noEmit
+          npm test
+
+      - name: Setup JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Configure Android Release Keystore
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          if [ -z "$ANDROID_KEYSTORE_BASE64" ] || [ -z "$ANDROID_KEYSTORE_PASSWORD" ] || [ -z "$ANDROID_KEY_ALIAS" ] || [ -z "$ANDROID_KEY_PASSWORD" ]; then
+            echo "::error::Missing Android signing secrets (ANDROID_KEYSTORE_BASE64, ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS, ANDROID_KEY_PASSWORD)."
+            exit 1
+          fi
+          echo "$ANDROID_KEYSTORE_BASE64" | base64 --decode > mobile/android/app/lifeos-release.keystore
+          cat <<EOF > mobile/android/keystore.properties
+          storeFile=lifeos-release.keystore
+          storePassword=${ANDROID_KEYSTORE_PASSWORD}
+          keyAlias=${ANDROID_KEY_ALIAS}
+          keyPassword=${ANDROID_KEY_PASSWORD}
+          EOF
+
+      - name: Build Signed Release APK
+        working-directory: mobile/android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleRelease -PreactNativeArchitectures=armeabi-v7a,arm64-v8a
+
+      - name: Prepare Release APK artifact
+        run: |
+          mkdir -p release-artifacts
+          cp mobile/android/app/build/outputs/apk/release/app-release.apk "release-artifacts/${{ steps.version.outputs.apk_name }}"
+
+      - name: Upload APK workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.version.outputs.apk_name }}
+          path: release-artifacts/${{ steps.version.outputs.apk_name }}
+
+      - name: Check whether GitHub Release should be published
+        id: should_release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${{ steps.version.outputs.tag_name }}"
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]] || [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          elif ! gh release view "$TAG" >/dev/null 2>&1; then
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Release $TAG already exists; skipping auto-release (bump versionName/versionCode in build.gradle to publish a new update)."
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Publish GitHub Release
+        if: steps.should_release.outputs.publish == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag_name }}
+          name: Life OS v${{ steps.version.outputs.version_name }}
+          files: release-artifacts/${{ steps.version.outputs.apk_name }}
+          body: |
+            <!-- versionCode:${{ steps.version.outputs.version_code }} -->
+            <!-- forceUpdate:${{ inputs.force_update || 'false' }} -->
+            ${{ inputs.release_notes || 'Bug fixes and improvements.' }}

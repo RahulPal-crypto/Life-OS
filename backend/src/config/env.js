@@ -153,6 +153,20 @@ export const env = {
     windowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS || '900000', 10), // 15 mins
     max: parseInt(process.env.RATE_LIMIT_MAX_REQUESTS || '100', 10),
   },
+
+  appUpdate: {
+    githubRepo: (process.env.APP_GITHUB_REPO || 'RahulPal-crypto/Life-OS').trim(),
+    githubToken: process.env.GITHUB_TOKEN || '',
+    cacheTtlMs: parseInt(process.env.APP_UPDATE_CACHE_TTL_MS || '300000', 10), // 5 mins
+    minVersionCode: parseInt(process.env.APP_MIN_VERSION_CODE || '1', 10),
+    forceUpdate: parseBoolean(process.env.APP_FORCE_UPDATE, false),
+    manualVersionCode: process.env.APP_LATEST_VERSION_CODE
+      ? parseInt(process.env.APP_LATEST_VERSION_CODE, 10)
+      : null,
+    manualVersionName: process.env.APP_LATEST_VERSION_NAME || null,
+    manualApkUrl: process.env.APP_APK_DOWNLOAD_URL || null,
+    manualReleaseNotes: process.env.APP_RELEASE_NOTES || '',
+  },
 };
 
 /**
