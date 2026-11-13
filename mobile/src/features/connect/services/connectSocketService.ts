@@ -81,13 +81,34 @@ class ConnectSocketService {
     this.token = null;
   }
 
-  sendSocketMessage(conversationId: string, content: string, replyToId?: string): boolean {
+  sendSocketMessage(
+    conversationId: string,
+    contentOrPayload:
+      | string
+      | {
+          content?: string;
+          messageType?: string;
+          mediaUrl?: string | null;
+          fileName?: string | null;
+          fileSize?: number | null;
+          mimeType?: string | null;
+          mediaDuration?: number | null;
+          thumbnailUrl?: string | null;
+          replyToId?: string | null;
+        },
+    replyToId?: string
+  ): boolean {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return false;
     try {
+      const data =
+        typeof contentOrPayload === 'string'
+          ? { conversationId, content: contentOrPayload, replyToId: replyToId || null }
+          : { conversationId, ...contentOrPayload, replyToId: contentOrPayload.replyToId || replyToId || null };
+
       this.ws.send(
         JSON.stringify({
           event: 'send_message',
-          data: { conversationId, content, replyToId: replyToId || null },
+          data,
         })
       );
       return true;
@@ -96,7 +117,11 @@ class ConnectSocketService {
     }
   }
 
-  emitTyping(conversationId: string, recipientUserIds: string[], isTyping: boolean): void {
+  emitTyping(
+    conversationId: string,
+    isTyping: boolean,
+    recipientUserIds: string[] = []
+  ): void {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
     try {
       this.ws.send(

@@ -20,7 +20,8 @@ router.get('/contacts/search', ConnectController.searchUsers);
 router.get('/conversations', ConnectController.getConversations);
 router.post('/conversations', ConnectController.createConversation);
 
-// Messages
+// Messages & Attachments
+router.post('/upload', ConnectController.uploadMedia);
 router.get('/conversations/:id/messages', ConnectController.getMessages);
 router.post('/conversations/:id/messages', ConnectController.sendMessage);
 router.post('/conversations/:id/read', ConnectController.markRead);

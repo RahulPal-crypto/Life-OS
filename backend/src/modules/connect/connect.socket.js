@@ -119,10 +119,28 @@ export function initConnectWebSocketServer(httpServer) {
         }
 
         if (event === 'send_message') {
-          const { conversationId, content, replyToId } = data || {};
-          if (conversationId && content) {
+          const {
+            conversationId,
+            content,
+            messageType,
+            mediaUrl,
+            fileName,
+            fileSize,
+            mimeType,
+            mediaDuration,
+            thumbnailUrl,
+            replyToId,
+          } = data || {};
+          if (conversationId && (content || mediaUrl)) {
             const result = await ConnectService.sendMessage(userId, conversationId, {
-              content,
+              content: content || '',
+              messageType: messageType || (mediaUrl ? 'image' : 'text'),
+              mediaUrl,
+              fileName,
+              fileSize,
+              mimeType,
+              mediaDuration,
+              thumbnailUrl,
               replyToId,
             });
 

@@ -31,6 +31,13 @@ interface MemoriesVaultNativeModule {
   stopVoiceRecording: () => Promise<PickedLocalFile | null>;
   playAudio: (pathOrUri: string) => Promise<boolean>;
   stopAudio: () => Promise<boolean>;
+  setAudioSpeed: (speed: number) => Promise<boolean>;
+  isAudioPlaying: () => Promise<boolean>;
+  readFileAsBase64: (pathOrUri: string) => Promise<string>;
+  saveBase64ToFile: (
+    base64Data: string,
+    fileName: string
+  ) => Promise<{ localUri: string; filePath: string; fileName: string; sizeBytes: number }>;
   encryptFileToVault: (
     pathOrUri: string,
     itemId: string,
@@ -139,9 +146,32 @@ export const memoriesNative = {
     return nativeVault.playAudio(pathOrUri);
   },
 
+  setAudioSpeed: async (speed: number): Promise<boolean> => {
+    if (!nativeVault || isJestEnv()) return false;
+    return nativeVault.setAudioSpeed(speed);
+  },
+
+  isAudioPlaying: async (): Promise<boolean> => {
+    if (!nativeVault || isJestEnv()) return false;
+    return nativeVault.isAudioPlaying();
+  },
+
   stopAudio: async (): Promise<boolean> => {
     if (!nativeVault || isJestEnv()) return false;
     return nativeVault.stopAudio();
+  },
+
+  readFileAsBase64: async (pathOrUri: string): Promise<string> => {
+    if (!nativeVault || isJestEnv()) return '';
+    return nativeVault.readFileAsBase64(pathOrUri);
+  },
+
+  saveBase64ToFile: async (
+    base64Data: string,
+    fileName: string
+  ): Promise<{ localUri: string; filePath: string; fileName: string; sizeBytes: number } | null> => {
+    if (!nativeVault || isJestEnv()) return null;
+    return nativeVault.saveBase64ToFile(base64Data, fileName);
   },
 
   encryptFileToVault: async (

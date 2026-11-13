@@ -6,6 +6,8 @@ import {
   ConnectMessage,
   ConnectSecurityStatus,
   ConnectUserContact,
+  ConnectMessageType,
+  ConnectMediaUploadResponse,
 } from '../types';
 
 class ConnectService {
@@ -114,16 +116,57 @@ class ConnectService {
     return json.data || [];
   }
 
+  async uploadMedia(payload: {
+    fileName: string;
+    base64Data: string;
+    mediaType: ConnectMessageType;
+    mimeType?: string;
+    duration?: number;
+  }): Promise<ConnectMediaUploadResponse> {
+    const json = await this.request(apiConfig.endpoints.connect.upload, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+    return json.data;
+  }
+
   async sendMessage(
     conversationId: string,
-    content: string,
+    payload:
+      | {
+          content?: string;
+          messageType?: ConnectMessageType;
+          mediaUrl?: string | null;
+          fileName?: string | null;
+          fileSize?: number | null;
+          mimeType?: string | null;
+          mediaDuration?: number | null;
+          thumbnailUrl?: string | null;
+          replyToId?: string | null;
+        }
+      | string,
     replyToId?: string | null
   ): Promise<ConnectMessage> {
+    const body =
+      typeof payload === 'string'
+        ? { content: payload, replyToId: replyToId || null, messageType: 'text' }
+        : {
+            content: payload.content || '',
+            messageType: payload.messageType || (payload.mediaUrl ? 'image' : 'text'),
+            mediaUrl: payload.mediaUrl || null,
+            fileName: payload.fileName || null,
+            fileSize: payload.fileSize || null,
+            mimeType: payload.mimeType || null,
+            mediaDuration: payload.mediaDuration || null,
+            thumbnailUrl: payload.thumbnailUrl || null,
+            replyToId: payload.replyToId || replyToId || null,
+          };
+
     const json = await this.request(
       `${apiConfig.endpoints.connect.conversations}/${encodeURIComponent(conversationId)}/messages`,
       {
         method: 'POST',
-        body: JSON.stringify({ content, replyToId: replyToId || null }),
+        body: JSON.stringify(body),
       }
     );
     return json.data;

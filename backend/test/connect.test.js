@@ -6,6 +6,7 @@ import {
   validateSyncContacts,
   validateCreateConversation,
   validateSendMessage,
+  validateUploadMedia,
 } from '../src/modules/connect/connect.validator.js';
 
 describe('Connect Validators', () => {
@@ -58,8 +59,52 @@ describe('Connect Validators', () => {
     const msg = validateSendMessage({ content: 'Hello from Life OS!' });
     assert.equal(msg.isValid, true);
     assert.equal(msg.sanitized.content, 'Hello from Life OS!');
+    assert.equal(msg.sanitized.messageType, 'text');
 
     const emptyMsg = validateSendMessage({ content: '' });
     assert.equal(emptyMsg.isValid, false);
+
+    // Phase 2: Media messages with captions or attachments
+    const imgMsg = validateSendMessage({
+      messageType: 'image',
+      mediaUrl: '/uploads/connect/2026/11/sample.jpg',
+      fileName: 'sample.jpg',
+      fileSize: 102400,
+      content: 'Look at this photo',
+    });
+    assert.equal(imgMsg.isValid, true);
+    assert.equal(imgMsg.sanitized.messageType, 'image');
+    assert.equal(imgMsg.sanitized.mediaUrl, '/uploads/connect/2026/11/sample.jpg');
+    assert.equal(imgMsg.sanitized.fileName, 'sample.jpg');
+    assert.equal(imgMsg.sanitized.fileSize, 102400);
+
+    const voiceMsg = validateSendMessage({
+      messageType: 'audio',
+      mediaUrl: '/uploads/connect/2026/11/voice.m4a',
+      fileName: 'voice.m4a',
+      mediaDuration: 12,
+    });
+    assert.equal(voiceMsg.isValid, true);
+    assert.equal(voiceMsg.sanitized.messageType, 'audio');
+    assert.equal(voiceMsg.sanitized.mediaDuration, 12);
+  });
+
+  it('validates media upload payloads for Phase 2', () => {
+    const validUpload = validateUploadMedia({
+      fileName: 'invoice.pdf',
+      base64Data: 'JVBERi0xLjQKJ...',
+      mediaType: 'document',
+      mimeType: 'application/pdf',
+    });
+    assert.equal(validUpload.isValid, true);
+    assert.equal(validUpload.sanitized.fileName, 'invoice.pdf');
+    assert.equal(validUpload.sanitized.mediaType, 'document');
+
+    const invalidUpload = validateUploadMedia({
+      fileName: '',
+      base64Data: '',
+    });
+    assert.equal(invalidUpload.isValid, false);
+    assert.equal(invalidUpload.errors.length >= 2, true);
   });
 });

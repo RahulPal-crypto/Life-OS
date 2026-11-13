@@ -320,22 +320,105 @@ class MemoriesVaultModule(private val reactContext: ReactApplicationContext) :
   fun playAudio(pathOrUri: String, promise: Promise) {
     try {
       stopAudioInternal()
-      val file = resolveLocalFile(pathOrUri)
-        ?: throw IllegalArgumentException("Audio file not found.")
-      val player = MediaPlayer().apply {
-        setDataSource(file.absolutePath)
-        setOnCompletionListener {
+      val player = MediaPlayer()
+      if (pathOrUri.startsWith("http://") || pathOrUri.startsWith("https://")) {
+        player.setDataSource(pathOrUri)
+        player.setOnPreparedListener {
+          it.start()
+        }
+        player.setOnCompletionListener {
           stopAudioInternal()
         }
-        prepare()
-        start()
+        player.prepareAsync()
+        mediaPlayer = player
+        promise.resolve(true)
+        return
       }
+
+      val file = resolveLocalFile(pathOrUri)
+        ?: throw IllegalArgumentException("Audio file not found.")
+      player.setDataSource(file.absolutePath)
+      player.setOnCompletionListener {
+        stopAudioInternal()
+      }
+      player.prepare()
+      player.start()
       mediaPlayer = player
       promise.resolve(true)
     } catch (e: Exception) {
       stopAudioInternal()
       promise.reject("AUDIO_PLAY_FAILED", e.message, e)
     }
+  }
+
+  @ReactMethod
+  fun setAudioSpeed(speed: Float, promise: Promise) {
+    try {
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+        mediaPlayer?.let { player ->
+          if (player.isPlaying) {
+            val params = player.playbackParams
+            params.speed = speed
+            player.playbackParams = params
+          }
+        }
+      }
+      promise.resolve(true)
+    } catch (e: Exception) {
+      promise.reject("SET_SPEED_FAILED", e.message, e)
+    }
+  }
+
+  @ReactMethod
+  fun isAudioPlaying(promise: Promise) {
+    try {
+      val isPlaying = mediaPlayer?.isPlaying == true
+      promise.resolve(isPlaying)
+    } catch (_: Exception) {
+      promise.resolve(false)
+    }
+  }
+
+  @ReactMethod
+  fun readFileAsBase64(pathOrUri: String, promise: Promise) {
+    Thread {
+      try {
+        val file = resolveLocalFile(pathOrUri)
+          ?: throw IllegalArgumentException("File not found locally: $pathOrUri")
+        val bytes = file.readBytes()
+        val base64 = Base64.encodeToString(bytes, Base64.NO_WRAP)
+        promise.resolve(base64)
+      } catch (e: Exception) {
+        promise.reject("READ_BASE64_FAILED", e.message, e)
+      }
+    }.start()
+  }
+
+  @ReactMethod
+  fun saveBase64ToFile(base64Data: String, fileName: String, promise: Promise) {
+    Thread {
+      try {
+        val cleanName = fileName.replace(Regex("[^a-zA-Z0-9._-]"), "_")
+        val dir = ensureRegularDir()
+        val destFile = File(dir, "${System.currentTimeMillis()}_$cleanName")
+        val pureB64 = if (base64Data.contains(",")) {
+          base64Data.substringAfter(",")
+        } else {
+          base64Data
+        }
+        val bytes = Base64.decode(pureB64, Base64.NO_WRAP)
+        destFile.writeBytes(bytes)
+        val map = Arguments.createMap().apply {
+          putString("localUri", Uri.fromFile(destFile).toString())
+          putString("filePath", destFile.absolutePath)
+          putString("fileName", cleanName)
+          putDouble("sizeBytes", destFile.length().toDouble())
+        }
+        promise.resolve(map)
+      } catch (e: Exception) {
+        promise.reject("SAVE_BASE64_FAILED", e.message, e)
+      }
+    }.start()
   }
 
   @ReactMethod

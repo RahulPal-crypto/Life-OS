@@ -82,15 +82,30 @@ export function validateCreateConversation(body = {}) {
   };
 }
 
+export const ALLOWED_MESSAGE_TYPES = ['text', 'image', 'video', 'document', 'audio', 'system'];
+
 export function validateSendMessage(body = {}) {
   const errors = [];
+  const rawType = typeof body.messageType === 'string' ? body.messageType.toLowerCase() : 'text';
+  const messageType = ALLOWED_MESSAGE_TYPES.includes(rawType) ? rawType : 'text';
   const content = typeof body.content === 'string' ? body.content.trim() : '';
-  const messageType = ['text', 'system'].includes(body.messageType) ? body.messageType : 'text';
-  const replyToId = typeof body.replyToId === 'string' ? body.replyToId.trim() : null;
+  const mediaUrl = typeof body.mediaUrl === 'string' && body.mediaUrl.trim() ? body.mediaUrl.trim() : null;
+  const fileName = typeof body.fileName === 'string' && body.fileName.trim() ? body.fileName.trim() : null;
+  const fileSize = typeof body.fileSize === 'number' && Number.isFinite(body.fileSize) ? Math.max(0, Math.round(body.fileSize)) : null;
+  const mimeType = typeof body.mimeType === 'string' && body.mimeType.trim() ? body.mimeType.trim() : null;
+  const mediaDuration = typeof body.mediaDuration === 'number' && Number.isFinite(body.mediaDuration)
+    ? Math.max(0, Math.round(body.mediaDuration))
+    : (typeof body.duration === 'number' && Number.isFinite(body.duration) ? Math.max(0, Math.round(body.duration)) : null);
+  const thumbnailUrl = typeof body.thumbnailUrl === 'string' && body.thumbnailUrl.trim() ? body.thumbnailUrl.trim() : null;
+  const replyToId = typeof body.replyToId === 'string' && body.replyToId.trim() ? body.replyToId.trim() : null;
 
-  if (!content) {
+  if (messageType === 'text' && !content) {
     errors.push('Message content cannot be empty.');
-  } else if (content.length > 5000) {
+  } else if (!content && !mediaUrl) {
+    errors.push('Either message content or media attachment is required.');
+  }
+
+  if (content && content.length > 5000) {
     errors.push('Message content cannot exceed 5000 characters.');
   }
 
@@ -100,7 +115,44 @@ export function validateSendMessage(body = {}) {
     sanitized: {
       content,
       messageType,
+      mediaUrl,
+      fileName,
+      fileSize,
+      mimeType,
+      mediaDuration,
+      thumbnailUrl,
       replyToId,
+    },
+  };
+}
+
+export function validateUploadMedia(body = {}) {
+  const errors = [];
+  const fileName = typeof body.fileName === 'string' ? body.fileName.trim() : '';
+  const base64Data = typeof body.base64Data === 'string' ? body.base64Data.trim() : '';
+  const rawMediaType = typeof body.mediaType === 'string' ? body.mediaType.toLowerCase() : 'image';
+  const mediaType = ['image', 'photo', 'video', 'document', 'audio'].includes(rawMediaType)
+    ? (rawMediaType === 'photo' ? 'image' : rawMediaType)
+    : 'document';
+  const mimeType = typeof body.mimeType === 'string' ? body.mimeType.trim() : 'application/octet-stream';
+  const duration = typeof body.duration === 'number' && Number.isFinite(body.duration) ? Math.max(0, Math.round(body.duration)) : null;
+
+  if (!fileName) {
+    errors.push('File name is required.');
+  }
+  if (!base64Data) {
+    errors.push('Base64 file data is required.');
+  }
+
+  return {
+    isValid: errors.length === 0,
+    errors,
+    sanitized: {
+      fileName,
+      base64Data,
+      mediaType,
+      mimeType,
+      duration,
     },
   };
 }

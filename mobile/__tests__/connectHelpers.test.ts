@@ -1,5 +1,11 @@
 import { ConnectConversation, ConnectFilterTab } from '../src/features/connect/types';
 import { connectService } from '../src/features/connect/services/connectService';
+import {
+  formatDuration,
+  formatFileSize,
+  getDocumentIcon,
+} from '../src/features/connect/services/connectMediaNative';
+import { resolveMediaUrl } from '../src/config/apiConfig';
 
 describe('My Connect Unit Tests', () => {
   it('manages lock and unlock session states accurately', () => {
@@ -84,5 +90,30 @@ describe('My Connect Unit Tests', () => {
     expect(filterFn(mockConversations, 'groups')[0].displayName).toBe('Family Group');
     expect(filterFn(mockConversations, 'favorites').length).toBe(1);
     expect(filterFn(mockConversations, 'favorites')[0].displayName).toBe('Aman Sharma');
+  });
+
+  it('formats audio durations and file sizes for Phase 2 media', () => {
+    expect(formatDuration(0)).toBe('0:00');
+    expect(formatDuration(9)).toBe('0:09');
+    expect(formatDuration(65)).toBe('1:05');
+    expect(formatDuration(360)).toBe('6:00');
+
+    expect(formatFileSize(0)).toBe('0 B');
+    expect(formatFileSize(512)).toBe('512 B');
+    expect(formatFileSize(2048)).toBe('2.0 KB');
+    expect(formatFileSize(5242880)).toBe('5.0 MB');
+  });
+
+  it('selects appropriate document icons and resolves media URLs', () => {
+    expect(getDocumentIcon('project_spec.pdf')).toBe('📄');
+    expect(getDocumentIcon('proposal.docx')).toBe('📝');
+    expect(getDocumentIcon('budget.xlsx')).toBe('📊');
+    expect(getDocumentIcon('bundle.zip')).toBe('📦');
+    expect(getDocumentIcon('unknown.bin')).toBe('📁');
+
+    expect(resolveMediaUrl(null)).toBeNull();
+    expect(resolveMediaUrl('https://example.com/photo.jpg')).toBe('https://example.com/photo.jpg');
+    expect(resolveMediaUrl('file:///data/user/0/audio.m4a')).toBe('file:///data/user/0/audio.m4a');
+    expect(resolveMediaUrl('/uploads/connect/sample.jpg')?.startsWith('http')).toBe(true);
   });
 });

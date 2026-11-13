@@ -73,6 +73,7 @@ export const apiConfig = {
       contactsSync: '/connect/contacts/sync',
       contactsSearch: '/connect/contacts/search',
       conversations: '/connect/conversations',
+      upload: '/connect/upload',
     },
   },
 };
@@ -80,4 +81,21 @@ export const apiConfig = {
 export const getConnectWsUrl = (token: string): string => {
   const wsBase = API_URL.replace(/^http/, 'ws');
   return `${wsBase}/connect-ws?token=${encodeURIComponent(token)}`;
+};
+
+export const resolveMediaUrl = (url: string | null | undefined): string | null => {
+  if (!url || typeof url !== 'string') return null;
+  const trimmed = url.trim();
+  if (
+    trimmed.startsWith('http://') ||
+    trimmed.startsWith('https://') ||
+    trimmed.startsWith('file://') ||
+    trimmed.startsWith('content://') ||
+    trimmed.startsWith('data:')
+  ) {
+    return trimmed;
+  }
+  const base = API_URL.replace(/\/api\/v1\/?$/, '');
+  const path = trimmed.startsWith('/') ? trimmed : `/${trimmed}`;
+  return `${base}${path}`;
 };

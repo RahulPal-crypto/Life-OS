@@ -321,14 +321,20 @@ export const runMigrations = async () => {
     `);
     console.log(`[Migration] Table 'connect_conversation_members' verified.`);
 
-    // 15. Create 'connect_messages' table
+    // 15. Create or Alter 'connect_messages' table (supports text, image, video, document, audio, system)
     await connection.query(`
       CREATE TABLE IF NOT EXISTS connect_messages (
         id VARCHAR(36) PRIMARY KEY,
         conversation_id VARCHAR(36) NOT NULL,
         sender_id VARCHAR(36) NOT NULL,
-        message_type ENUM('text', 'system') DEFAULT 'text',
+        message_type VARCHAR(20) DEFAULT 'text',
         content TEXT NOT NULL,
+        media_url TEXT NULL,
+        file_name VARCHAR(255) NULL,
+        file_size BIGINT NULL,
+        mime_type VARCHAR(100) NULL,
+        media_duration INT NULL,
+        thumbnail_url TEXT NULL,
         status ENUM('sent', 'delivered', 'read') DEFAULT 'sent',
         reply_to_id VARCHAR(36) NULL,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -339,6 +345,26 @@ export const runMigrations = async () => {
         CONSTRAINT fk_connect_msg_sender FOREIGN KEY (sender_id) REFERENCES users(id) ON DELETE CASCADE
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
     `);
+
+    // Ensure Phase 2 columns exist on previously created tables
+    try {
+      const [mediaUrlCol] = await connection.query(`SHOW COLUMNS FROM connect_messages LIKE 'media_url'`);
+      if (mediaUrlCol.length === 0) {
+        await connection.query(`
+          ALTER TABLE connect_messages
+            MODIFY COLUMN message_type VARCHAR(20) DEFAULT 'text',
+            ADD COLUMN media_url TEXT NULL AFTER content,
+            ADD COLUMN file_name VARCHAR(255) NULL AFTER media_url,
+            ADD COLUMN file_size BIGINT NULL AFTER file_name,
+            ADD COLUMN mime_type VARCHAR(100) NULL AFTER file_size,
+            ADD COLUMN media_duration INT NULL AFTER mime_type,
+            ADD COLUMN thumbnail_url TEXT NULL AFTER media_duration
+        `);
+        console.log(`[Migration] Added Phase 2 media columns to 'connect_messages'.`);
+      }
+    } catch (colErr) {
+      console.warn(`[Migration] Note on connect_messages schema update:`, colErr.message);
+    }
     console.log(`[Migration] Table 'connect_messages' verified.`);
 
     // 16. Create 'connect_contacts' table

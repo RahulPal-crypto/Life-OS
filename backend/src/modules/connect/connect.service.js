@@ -1,4 +1,6 @@
 import crypto from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
 import bcrypt from 'bcryptjs';
 import { query } from '../../config/db.js';
 
@@ -540,6 +542,12 @@ export class ConnectService {
          m.sender_id,
          m.message_type,
          m.content,
+         m.media_url,
+         m.file_name,
+         m.file_size,
+         m.mime_type,
+         m.media_duration,
+         m.thumbnail_url,
          m.status,
          m.reply_to_id,
          m.created_at,
@@ -577,6 +585,12 @@ export class ConnectService {
       senderAvatar: r.sender_avatar,
       messageType: r.message_type,
       content: r.content,
+      mediaUrl: r.media_url || null,
+      fileName: r.file_name || null,
+      fileSize: r.file_size !== null && r.file_size !== undefined ? Number(r.file_size) : null,
+      mimeType: r.mime_type || null,
+      mediaDuration: r.media_duration !== null && r.media_duration !== undefined ? Number(r.media_duration) : null,
+      thumbnailUrl: r.thumbnail_url || null,
       status: r.status,
       replyToId: r.reply_to_id,
       createdAt: r.created_at,
@@ -584,8 +598,48 @@ export class ConnectService {
     }));
   }
 
+  static async uploadMedia(userId, { fileName, base64Data, mediaType, mimeType, duration }) {
+    if (!fileName || !base64Data) {
+      throw createServiceError('File name and base64 data are required.', 400, 'INVALID_UPLOAD_PAYLOAD');
+    }
+
+    const cleanName = path.basename(fileName).replace(/[^a-zA-Z0-9._-]/g, '_');
+    const now = new Date();
+    const subDir = path.join('uploads', 'connect', `${now.getFullYear()}`, `${String(now.getMonth() + 1).padStart(2, '0')}`);
+    const fullDirPath = path.join(process.cwd(), subDir);
+    await fs.promises.mkdir(fullDirPath, { recursive: true });
+
+    const pureBase64 = base64Data.replace(/^data:[^;]+;base64,/, '');
+    const buffer = Buffer.from(pureBase64, 'base64');
+
+    const uniqueFileName = `${Date.now()}_${crypto.randomBytes(4).toString('hex')}_${cleanName}`;
+    const filePath = path.join(fullDirPath, uniqueFileName);
+    await fs.promises.writeFile(filePath, buffer);
+
+    const relativeUrl = `/${subDir.replace(/\\/g, '/')}/${uniqueFileName}`;
+
+    return {
+      mediaUrl: relativeUrl,
+      fileName: cleanName,
+      fileSize: buffer.length,
+      mimeType: mimeType || 'application/octet-stream',
+      mediaType: mediaType || 'document',
+      mediaDuration: duration ? Number(duration) : null,
+    };
+  }
+
   static async sendMessage(userId, conversationId, payload) {
-    const { content, messageType = 'text', replyToId = null } = payload;
+    const {
+      content = '',
+      messageType = 'text',
+      mediaUrl = null,
+      fileName = null,
+      fileSize = null,
+      mimeType = null,
+      mediaDuration = null,
+      thumbnailUrl = null,
+      replyToId = null,
+    } = payload;
 
     // Verify membership
     const [membership] = await query(
@@ -600,17 +654,44 @@ export class ConnectService {
 
     await query(
       `INSERT INTO connect_messages (
-         id, conversation_id, sender_id, message_type, content, status, reply_to_id
-       ) VALUES (?, ?, ?, ?, ?, 'sent', ?)`,
-      [messageId, conversationId, userId, messageType, content, replyToId]
+         id, conversation_id, sender_id, message_type, content,
+         media_url, file_name, file_size, mime_type, media_duration, thumbnail_url,
+         status, reply_to_id
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'sent', ?)`,
+      [
+        messageId,
+        conversationId,
+        userId,
+        messageType,
+        content,
+        mediaUrl,
+        fileName,
+        fileSize,
+        mimeType,
+        mediaDuration,
+        thumbnailUrl,
+        replyToId,
+      ]
     );
+
+    // Build WhatsApp-style snippet for conversation list
+    let snippet = content;
+    if (messageType === 'image') {
+      snippet = content ? `📷 ${content}` : '📷 Photo';
+    } else if (messageType === 'video') {
+      snippet = content ? `🎥 ${content}` : '🎥 Video';
+    } else if (messageType === 'audio') {
+      snippet = mediaDuration ? `🎤 Voice message (${mediaDuration}s)` : '🎤 Voice message';
+    } else if (messageType === 'document') {
+      snippet = fileName ? `📄 ${fileName}` : '📄 Document';
+    }
 
     // Update conversation last message snippet
     await query(
       `UPDATE connect_conversations
        SET last_message_text = ?, last_message_sender_id = ?, last_message_at = NOW()
        WHERE id = ?`,
-      [content.slice(0, 200), userId, conversationId]
+      [snippet.slice(0, 200), userId, conversationId]
     );
 
     // Fetch created message with sender profile
@@ -621,6 +702,12 @@ export class ConnectService {
          m.sender_id,
          m.message_type,
          m.content,
+         m.media_url,
+         m.file_name,
+         m.file_size,
+         m.mime_type,
+         m.media_duration,
+         m.thumbnail_url,
          m.status,
          m.reply_to_id,
          m.created_at,
@@ -646,6 +733,12 @@ export class ConnectService {
       senderAvatar: msgRow.sender_avatar,
       messageType: msgRow.message_type,
       content: msgRow.content,
+      mediaUrl: msgRow.media_url || null,
+      fileName: msgRow.file_name || null,
+      fileSize: msgRow.file_size !== null && msgRow.file_size !== undefined ? Number(msgRow.file_size) : null,
+      mimeType: msgRow.mime_type || null,
+      mediaDuration: msgRow.media_duration !== null && msgRow.media_duration !== undefined ? Number(msgRow.media_duration) : null,
+      thumbnailUrl: msgRow.thumbnail_url || null,
       status: msgRow.status,
       replyToId: msgRow.reply_to_id,
       createdAt: msgRow.created_at,

@@ -46,18 +46,35 @@ export interface ConnectConversation {
   isOnline?: boolean;
 }
 
+export type ConnectMessageType = 'text' | 'image' | 'video' | 'document' | 'audio' | 'system';
+
 export interface ConnectMessage {
   id: string;
   conversationId: string;
   senderId: string;
   senderName: string;
   senderAvatar: string | null;
-  messageType: 'text' | 'system';
+  messageType: ConnectMessageType;
   content: string;
+  mediaUrl?: string | null;
+  fileName?: string | null;
+  fileSize?: number | null;
+  mimeType?: string | null;
+  mediaDuration?: number | null;
+  thumbnailUrl?: string | null;
   status: 'sent' | 'delivered' | 'read';
   replyToId: string | null;
   createdAt: string;
   isOutgoing: boolean;
+}
+
+export interface ConnectMediaUploadResponse {
+  mediaUrl: string;
+  fileName: string;
+  fileSize: number;
+  mimeType: string;
+  mediaType: ConnectMessageType;
+  mediaDuration: number | null;
 }
 
 export type ConnectFilterTab = 'all' | 'unread' | 'groups' | 'favorites';

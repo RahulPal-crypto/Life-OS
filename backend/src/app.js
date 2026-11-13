@@ -1,6 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
+import path from 'node:path';
 import { env } from './config/env.js';
 import authRoutes from './modules/auth/auth.routes.js';
 import profileRoutes from './modules/profile/profile.routes.js';
@@ -19,10 +20,13 @@ const app = express();
 app.set('trust proxy', env.trustProxy);
 
 // Security & Parsing Middlewares
-app.use(helmet());
+app.use(helmet({ crossOriginResourcePolicy: { policy: 'cross-origin' } }));
 app.use(cors({ origin: env.corsOrigin, credentials: true }));
-app.use(express.json({ limit: '5mb' }));
-app.use(express.urlencoded({ extended: true, limit: '5mb' }));
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+
+// Static media uploads folder (Life OS Connect & general attachments)
+app.use('/uploads', express.static(path.join(process.cwd(), 'uploads')));
 
 // Health Check Endpoint (verifies live DB connectivity)
 app.get('/health', async (req, res) => {

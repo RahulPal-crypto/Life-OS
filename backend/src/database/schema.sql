@@ -220,13 +220,19 @@ CREATE TABLE IF NOT EXISTS connect_conversation_members (
   CONSTRAINT fk_conv_members_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- 13. CONNECT MESSAGES TABLE
+-- 13. CONNECT MESSAGES TABLE (Text, Media, Documents, Voice Notes, System)
 CREATE TABLE IF NOT EXISTS connect_messages (
   id VARCHAR(36) PRIMARY KEY,
   conversation_id VARCHAR(36) NOT NULL,
   sender_id VARCHAR(36) NOT NULL,
-  message_type ENUM('text', 'system') DEFAULT 'text',
+  message_type VARCHAR(20) DEFAULT 'text',
   content TEXT NOT NULL,
+  media_url TEXT NULL,
+  file_name VARCHAR(255) NULL,
+  file_size BIGINT NULL,
+  mime_type VARCHAR(100) NULL,
+  media_duration INT NULL,
+  thumbnail_url TEXT NULL,
   status ENUM('sent', 'delivered', 'read') DEFAULT 'sent',
   reply_to_id VARCHAR(36) NULL,
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,

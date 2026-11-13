@@ -5,6 +5,7 @@ import {
   validateSyncContacts,
   validateCreateConversation,
   validateSendMessage,
+  validateUploadMedia,
 } from './connect.validator.js';
 import { broadcastToUsers, isUserOnline } from './connect.socket.js';
 import { sendSuccess, sendCreated, sendError } from '../../utils/apiResponse.js';
@@ -148,7 +149,24 @@ export class ConnectController {
     }
   }
 
-  // 4. Messages
+  // 4. Messages & Media
+  static async uploadMedia(req, res, next) {
+    try {
+      const validation = validateUploadMedia(req.body);
+      if (!validation.isValid) {
+        return sendError(res, 'Validation failed.', 400, 'VALIDATION_FAILED', validation.errors);
+      }
+
+      const result = await ConnectService.uploadMedia(req.user.id, validation.sanitized);
+      return sendCreated(res, 'Media uploaded successfully.', result);
+    } catch (err) {
+      if (err.statusCode) {
+        return sendError(res, err.message, err.statusCode, err.code);
+      }
+      next(err);
+    }
+  }
+
   static async getMessages(req, res, next) {
     try {
       const { id: conversationId } = req.params;
