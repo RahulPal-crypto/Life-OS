@@ -519,7 +519,10 @@ export class ConnectService {
       throw createServiceError('You are not a member of this conversation.', 403, 'NOT_A_MEMBER');
     }
 
-    const limit = Math.min(Math.max(Number(options.limit) || 50, 1), 100);
+    const parsedLimit = Number.isInteger(options.limit)
+      ? options.limit
+      : Number.parseInt(options.limit, 10) || 50;
+    const safeLimit = Math.min(Math.max(parsedLimit, 1), 100);
     const beforeId = options.beforeId ? String(options.beforeId).trim() : null;
 
     let timeFilter = '';
@@ -533,8 +536,7 @@ export class ConnectService {
       }
     }
 
-    params.push(limit);
-
+    // Inline validated integer for LIMIT because TiDB prepared statements reject parameter placeholders in LIMIT ?
     const rows = await query(
       `SELECT
          m.id,
@@ -557,7 +559,7 @@ export class ConnectService {
        JOIN users u ON u.id = m.sender_id
        WHERE m.conversation_id = ? ${timeFilter}
        ORDER BY m.created_at DESC
-       LIMIT ?`,
+       LIMIT ${safeLimit}`,
       params
     );
 
