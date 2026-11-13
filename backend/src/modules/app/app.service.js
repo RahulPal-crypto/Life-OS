@@ -117,12 +117,12 @@ class AppService {
       }
       console.warn(`[AppUpdate] Failed to check GitHub Releases: ${error.message}; using latest release fallback`);
       return {
-        latestVersionCode: 6,
-        latestVersionName: '1.5',
+        latestVersionCode: 7,
+        latestVersionName: '1.6',
         minVersionCode: env.appUpdate.minVersionCode,
-        apkUrl: 'https://github.com/RahulPal-crypto/Life-OS/releases/download/v1.5/LifeOS-v1.5-c6.apk',
-        apkSizeBytes: 29039416,
-        releaseNotes: 'Fixed Safe Vault auto-closing on photo import, and automated Gallery original removal.',
+        apkUrl: 'https://github.com/RahulPal-crypto/Life-OS/releases/download/v1.6/LifeOS-v1.6-c7.apk',
+        apkSizeBytes: 29500000,
+        releaseNotes: 'My Connect Phase 1: Real-time chat, contacts sync, and biometric security gate.',
         forceUpdate: false,
         publishedAt: new Date().toISOString(),
         source: 'fallback',

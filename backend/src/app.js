@@ -6,6 +6,7 @@ import authRoutes from './modules/auth/auth.routes.js';
 import profileRoutes from './modules/profile/profile.routes.js';
 import myDayRoutes from './modules/myDay/myDay.routes.js';
 import memoriesRoutes from './modules/memories/memories.routes.js';
+import connectRoutes from './modules/connect/connect.routes.js';
 import appRoutes from './modules/app/app.routes.js';
 import { notFoundHandler, errorHandler } from './middlewares/errorHandler.js';
 import { apiRateLimiter } from './middlewares/rateLimiter.js';
@@ -58,6 +59,7 @@ app.use(`${env.apiPrefix}/auth`, authRoutes);
 app.use(`${env.apiPrefix}/profile`, profileRoutes);
 app.use(`${env.apiPrefix}/my-day`, myDayRoutes);
 app.use(`${env.apiPrefix}/memories`, memoriesRoutes);
+app.use(`${env.apiPrefix}/connect`, connectRoutes);
 app.use(`${env.apiPrefix}/app`, appRoutes);
 
 // Fallback & Error Handling Middlewares

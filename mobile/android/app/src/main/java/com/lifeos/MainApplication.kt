@@ -19,6 +19,7 @@ class MainApplication : Application(), ReactApplication {
           add(AppUpdaterPackage())
           add(ActivityTimerPackage())
           add(MemoriesVaultPackage())
+          add(ConnectContactsPackage())
         },
     )
   }

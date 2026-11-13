@@ -66,5 +66,18 @@ export const apiConfig = {
       vaultUnlock: '/memories/vault/unlock',
       vaultUnlockBiometric: '/memories/vault/unlock-biometric',
     },
+    connect: {
+      securityStatus: '/connect/security/status',
+      setupPin: '/connect/security/setup-pin',
+      verifyPin: '/connect/security/verify-pin',
+      contactsSync: '/connect/contacts/sync',
+      contactsSearch: '/connect/contacts/search',
+      conversations: '/connect/conversations',
+    },
   },
+};
+
+export const getConnectWsUrl = (token: string): string => {
+  const wsBase = API_URL.replace(/^http/, 'ws');
+  return `${wsBase}/connect-ws?token=${encodeURIComponent(token)}`;
 };

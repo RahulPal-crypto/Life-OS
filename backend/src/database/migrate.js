@@ -263,7 +263,104 @@ export const runMigrations = async () => {
     ]);
     console.log(`[Migration] Table 'memory_vault_settings' verified.`);
 
-    console.log('[Migration] All 9 tables migrated successfully.');
+    // 12. Create 'connect_security_settings' table
+    await connection.query(`
+      CREATE TABLE IF NOT EXISTS connect_security_settings (
+        user_id VARCHAR(36) PRIMARY KEY,
+        pin_hash VARCHAR(255) NULL,
+        biometric_key_hash VARCHAR(255) NULL,
+        biometric_enabled TINYINT(1) DEFAULT 1,
+        failed_attempts INT DEFAULT 0,
+        locked_until BIGINT NULL,
+        auto_lock_delay VARCHAR(20) DEFAULT 'immediate',
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        CONSTRAINT fk_connect_security_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    `);
+    console.log(`[Migration] Table 'connect_security_settings' verified.`);
+
+    // 13. Create 'connect_conversations' table
+    await connection.query(`
+      CREATE TABLE IF NOT EXISTS connect_conversations (
+        id VARCHAR(36) PRIMARY KEY,
+        type ENUM('direct', 'group') NOT NULL DEFAULT 'direct',
+        name VARCHAR(120) NULL,
+        icon VARCHAR(500) NULL,
+        description VARCHAR(255) NULL,
+        created_by VARCHAR(36) NOT NULL,
+        last_message_text TEXT NULL,
+        last_message_sender_id VARCHAR(36) NULL,
+        last_message_at TIMESTAMP NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        INDEX idx_connect_conv_last_msg (last_message_at),
+        CONSTRAINT fk_connect_conv_creator FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE CASCADE
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    `);
+    console.log(`[Migration] Table 'connect_conversations' verified.`);
+
+    // 14. Create 'connect_conversation_members' table
+    await connection.query(`
+      CREATE TABLE IF NOT EXISTS connect_conversation_members (
+        id VARCHAR(36) PRIMARY KEY,
+        conversation_id VARCHAR(36) NOT NULL,
+        user_id VARCHAR(36) NOT NULL,
+        role ENUM('admin', 'member') DEFAULT 'member',
+        nickname VARCHAR(100) NULL,
+        is_muted TINYINT(1) DEFAULT 0,
+        is_pinned TINYINT(1) DEFAULT 0,
+        is_favorite TINYINT(1) DEFAULT 0,
+        last_read_message_id VARCHAR(36) NULL,
+        last_read_at TIMESTAMP NULL,
+        joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE KEY uq_conv_member (conversation_id, user_id),
+        INDEX idx_conv_member_user (user_id),
+        CONSTRAINT fk_conv_members_conv FOREIGN KEY (conversation_id) REFERENCES connect_conversations(id) ON DELETE CASCADE,
+        CONSTRAINT fk_conv_members_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    `);
+    console.log(`[Migration] Table 'connect_conversation_members' verified.`);
+
+    // 15. Create 'connect_messages' table
+    await connection.query(`
+      CREATE TABLE IF NOT EXISTS connect_messages (
+        id VARCHAR(36) PRIMARY KEY,
+        conversation_id VARCHAR(36) NOT NULL,
+        sender_id VARCHAR(36) NOT NULL,
+        message_type ENUM('text', 'system') DEFAULT 'text',
+        content TEXT NOT NULL,
+        status ENUM('sent', 'delivered', 'read') DEFAULT 'sent',
+        reply_to_id VARCHAR(36) NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        INDEX idx_connect_msg_conv_time (conversation_id, created_at),
+        INDEX idx_connect_msg_sender (sender_id),
+        CONSTRAINT fk_connect_msg_conv FOREIGN KEY (conversation_id) REFERENCES connect_conversations(id) ON DELETE CASCADE,
+        CONSTRAINT fk_connect_msg_sender FOREIGN KEY (sender_id) REFERENCES users(id) ON DELETE CASCADE
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    `);
+    console.log(`[Migration] Table 'connect_messages' verified.`);
+
+    // 16. Create 'connect_contacts' table
+    await connection.query(`
+      CREATE TABLE IF NOT EXISTS connect_contacts (
+        id VARCHAR(36) PRIMARY KEY,
+        user_id VARCHAR(36) NOT NULL,
+        contact_user_id VARCHAR(36) NOT NULL,
+        custom_name VARCHAR(100) NULL,
+        phone_number VARCHAR(30) NULL,
+        is_blocked TINYINT(1) DEFAULT 0,
+        is_favorite TINYINT(1) DEFAULT 0,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE KEY uq_user_contact (user_id, contact_user_id),
+        INDEX idx_connect_contacts_user (user_id),
+        CONSTRAINT fk_connect_contacts_user FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+        CONSTRAINT fk_connect_contacts_target FOREIGN KEY (contact_user_id) REFERENCES users(id) ON DELETE CASCADE
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    `);
+    console.log(`[Migration] Table 'connect_contacts' verified.`);
+
+    console.log('[Migration] All Connect tables verified successfully.');
     return true;
   } catch (error) {
     console.error('[Migration Error]:', error.message);

@@ -2,6 +2,7 @@ import app from './app.js';
 import { env } from './config/env.js';
 import { pool, testConnection } from './config/db.js';
 import { runMigrations } from './database/migrate.js';
+import { initConnectWebSocketServer } from './modules/connect/connect.socket.js';
 
 const startServer = async () => {
   console.log('----------------------------------------------------');
@@ -32,6 +33,9 @@ const startServer = async () => {
     console.log(`[Server] Auth API:    http://localhost:${env.port}${env.apiPrefix}/auth`);
     console.log('----------------------------------------------------');
   });
+
+  // Attach My Connect Real-time WebSocket Server
+  initConnectWebSocketServer(server);
 
   // Graceful Shutdown (close HTTP listener and MySQL/TiDB connection pool)
   let isShuttingDown = false;

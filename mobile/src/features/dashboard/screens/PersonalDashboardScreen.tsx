@@ -21,6 +21,7 @@ interface PersonalDashboardScreenProps {
   user: User | null;
   onOpenMyDayTimeline: () => void;
   onOpenMemories: () => void;
+  onOpenConnect?: () => void;
   onOpenProfile: () => void;
   onSwitchSpace: () => void;
   onLogout: () => void;
@@ -30,6 +31,7 @@ export const PersonalDashboardScreen: React.FC<PersonalDashboardScreenProps> = (
   user,
   onOpenMyDayTimeline,
   onOpenMemories,
+  onOpenConnect,
   onOpenProfile,
   onSwitchSpace: _onSwitchSpace,
   onLogout: _onLogout,
@@ -102,7 +104,11 @@ export const PersonalDashboardScreen: React.FC<PersonalDashboardScreenProps> = (
         Alert.alert('My Places', 'Places visited, favorite spots, and geo-memories.');
         break;
       case 'my-connect':
-        Alert.alert('My Connect', 'Personal CRM, communication logs, and calls.');
+        if (onOpenConnect) {
+          onOpenConnect();
+        } else {
+          Alert.alert('My Connect', 'Personal CRM, communication logs, and calls.');
+        }
         break;
       case 'my-vault':
         Alert.alert('My Vault', 'Encrypted password manager and secure file vault.');

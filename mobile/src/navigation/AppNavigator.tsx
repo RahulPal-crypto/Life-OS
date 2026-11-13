@@ -13,6 +13,7 @@ import { AuthScreen, User, authService } from '../features/auth';
 import { PersonalDashboardScreen } from '../features/dashboard';
 import { MyDayScreen } from '../features/myDay';
 import { MyMemoriesScreen } from '../features/memories';
+import { MyConnectScreen } from '../features/connect';
 import { ProfileScreen } from '../features/profile';
 import {
   UpdateAvailableModal,
@@ -28,6 +29,7 @@ export type CurrentScreen =
   | 'dashboard'
   | 'my-day'
   | 'memories'
+  | 'connect'
   | 'profile';
 
 export const AppNavigator: React.FC = () => {
@@ -273,6 +275,7 @@ export const AppNavigator: React.FC = () => {
             user={currentUser}
             onOpenMyDayTimeline={() => navigateTo('my-day')}
             onOpenMemories={() => navigateTo('memories')}
+            onOpenConnect={() => navigateTo('connect')}
             onOpenProfile={() => navigateTo('profile')}
             onSwitchSpace={() => navigateTo('space-selection')}
             onLogout={handleLogout}
@@ -312,6 +315,24 @@ export const AppNavigator: React.FC = () => {
           ]}
         >
           <MyMemoriesScreen
+            user={currentUser}
+            onBackToDashboard={goBack}
+          />
+        </Animated.View>
+      )}
+
+      {/* 7. My Connect Realtime WhatsApp-style Communication Hub */}
+      {currentScreen === 'connect' && (
+        <Animated.View
+          style={[
+            styles.fullScreen,
+            {
+              opacity: screenFade,
+              zIndex: 2,
+            },
+          ]}
+        >
+          <MyConnectScreen
             user={currentUser}
             onBackToDashboard={goBack}
           />
