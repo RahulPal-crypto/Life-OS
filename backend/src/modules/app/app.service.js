@@ -115,17 +115,17 @@ class AppService {
       if (cachedVersionInfo) {
         return cachedVersionInfo;
       }
-      console.warn(`[AppUpdate] Failed to check GitHub Releases: ${error.message}`);
+      console.warn(`[AppUpdate] Failed to check GitHub Releases: ${error.message}; using latest release fallback`);
       return {
-        latestVersionCode: 1,
-        latestVersionName: '1.0',
+        latestVersionCode: 6,
+        latestVersionName: '1.5',
         minVersionCode: env.appUpdate.minVersionCode,
-        apkUrl: null,
-        apkSizeBytes: null,
-        releaseNotes: '',
+        apkUrl: 'https://github.com/RahulPal-crypto/Life-OS/releases/download/v1.5/LifeOS-v1.5-c6.apk',
+        apkSizeBytes: 29039416,
+        releaseNotes: 'Fixed Safe Vault auto-closing on photo import, and automated Gallery original removal.',
         forceUpdate: false,
-        publishedAt: null,
-        source: 'unavailable',
+        publishedAt: new Date().toISOString(),
+        source: 'fallback',
       };
     }
   }

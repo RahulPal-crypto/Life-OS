@@ -106,23 +106,19 @@ export const MyMemoriesScreen: React.FC<MyMemoriesScreenProps> = ({
   const [viewerItem, setViewerItem] = useState<MemoryItem | null>(null);
   const [isRecordingAudio, setIsRecordingAudio] = useState(false);
   const [importingMessage, setImportingMessage] = useState<string | null>(null);
-  const suppressAutoLockRef = useRef(false);
-  const suppressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const isExternalFlowActiveRef = useRef(false);
 
   const runWithoutAutoLock = useCallback(async <T,>(fn: () => Promise<T>): Promise<T> => {
-    if (suppressTimerRef.current) {
-      clearTimeout(suppressTimerRef.current);
-      suppressTimerRef.current = null;
-    }
-    suppressAutoLockRef.current = true;
+    isExternalFlowActiveRef.current = true;
     try {
       return await fn();
     } finally {
-      // Allow Android a short window after system picker or delete dialog closes to settle to active
-      suppressTimerRef.current = setTimeout(() => {
-        suppressAutoLockRef.current = false;
-        suppressTimerRef.current = null;
-      }, 900);
+      // Keep isExternalFlowActiveRef true until Android fully returns to active
+      setTimeout(() => {
+        if (AppState.currentState === 'active') {
+          isExternalFlowActiveRef.current = false;
+        }
+      }, 1500);
     }
   }, []);
 
@@ -152,9 +148,17 @@ export const MyMemoriesScreen: React.FC<MyMemoriesScreenProps> = ({
   // Auto-lock Safe Vault when app minimizes or screen locks (skip while system picker/camera/dialogs are open)
   useEffect(() => {
     const sub = AppState.addEventListener('change', (nextState: AppStateStatus) => {
+      if (nextState === 'active') {
+        // Returned to foreground from picker, camera, or delete dialog
+        setTimeout(() => {
+          isExternalFlowActiveRef.current = false;
+        }, 1000);
+        return;
+      }
+
       if (
         nextState === 'background' &&
-        !suppressAutoLockRef.current &&
+        !isExternalFlowActiveRef.current &&
         memoriesService.isVaultUnlocked()
       ) {
         lockSafeVault();
@@ -162,9 +166,6 @@ export const MyMemoriesScreen: React.FC<MyMemoriesScreenProps> = ({
     });
     return () => {
       sub.remove();
-      if (suppressTimerRef.current) {
-        clearTimeout(suppressTimerRef.current);
-      }
       lockSafeVault();
     };
   }, [lockSafeVault]);
@@ -194,7 +195,11 @@ export const MyMemoriesScreen: React.FC<MyMemoriesScreenProps> = ({
         setItems(data.items || []);
         setLocalStats(disk);
       } catch (err: any) {
-        if (String(err?.message || '').toLowerCase().includes('vault')) {
+        const msg = String(err?.message || '').toLowerCase();
+        if (
+          !memoriesService.isVaultUnlocked() ||
+          (msg.includes('vault') && (msg.includes('locked') || msg.includes('expired')))
+        ) {
           setIsVaultMode(false);
           setVaultModalVisible(true);
         } else {
@@ -313,11 +318,10 @@ export const MyMemoriesScreen: React.FC<MyMemoriesScreenProps> = ({
         });
       }
 
-      loadMemories(true);
-
       // Automatically remove originals from Gallery when imported into Safe Vault
       if (isVaultMode && sourceUrisToRemove.length > 0) {
         setImportingMessage('Removing original files from Gallery...');
+        isExternalFlowActiveRef.current = true;
         const delRes = await memoriesNative.deleteSourceUris(sourceUrisToRemove);
         if (delRes.failedCount > 0 && delRes.deletedCount === 0) {
           Alert.alert(
@@ -331,6 +335,8 @@ export const MyMemoriesScreen: React.FC<MyMemoriesScreenProps> = ({
           );
         }
       }
+
+      loadMemories(true);
     } finally {
       setImportingMessage(null);
     }
