@@ -19,6 +19,7 @@ router.get('/contacts/search', ConnectController.searchUsers);
 // Conversations
 router.get('/conversations', ConnectController.getConversations);
 router.post('/conversations', ConnectController.createConversation);
+router.post('/conversations/contact', ConnectController.startContactConversation);
 
 // Messages & Attachments
 router.post('/upload', ConnectController.uploadMedia);

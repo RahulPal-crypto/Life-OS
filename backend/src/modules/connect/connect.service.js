@@ -449,6 +449,69 @@ export class ConnectService {
     };
   }
 
+  static async getOrCreateContactConversation(userId, { name, phone }) {
+    if (!phone || typeof phone !== 'string') {
+      throw createServiceError('Phone number is required.', 400, 'PHONE_REQUIRED');
+    }
+
+    const cleanPhone = normalizePhone(phone);
+    if (!cleanPhone) {
+      throw createServiceError('Invalid phone number.', 400, 'INVALID_PHONE');
+    }
+
+    const last10 = cleanPhone.slice(-10);
+
+    // 1. Check if user exists in database with this phone
+    const [existingUser] = await query(
+      `SELECT id, name, profile_image, headline, phone
+       FROM users
+       WHERE phone = ? OR RIGHT(phone, 10) = ?
+       LIMIT 1`,
+      [cleanPhone, last10]
+    );
+
+    let targetUserId = existingUser?.id;
+
+    if (!targetUserId) {
+      // 2. Create contact placeholder user
+      targetUserId = crypto.randomUUID();
+      const placeholderEmail = `contact_${cleanPhone}_${Date.now()}@lifeos.internal`;
+      const dummyHash = '$2a$10$e8wF4r2Mek1JdJz0O69EieaJvR1zLkqk6Kz8Bw5hZ9Pz2B0T6Uj2i';
+      const contactDisplayName = (name && String(name).trim()) || cleanPhone;
+
+      try {
+        await query(
+          `INSERT INTO users (id, name, email, phone, password_hash, headline, account_status)
+           VALUES (?, ?, ?, ?, ?, 'Phone Contact', 'active')`,
+          [targetUserId, contactDisplayName, placeholderEmail, cleanPhone, dummyHash]
+        );
+      } catch {
+        // If already exists or race condition, fetch existing id
+        const [recheck] = await query(
+          `SELECT id FROM users WHERE phone = ? OR RIGHT(phone, 10) = ? LIMIT 1`,
+          [cleanPhone, last10]
+        );
+        if (recheck?.id) {
+          targetUserId = recheck.id;
+        }
+      }
+    }
+
+    // 3. Save / update custom name in connect_contacts
+    const contactRecordId = crypto.randomUUID();
+    await query(
+      `INSERT INTO connect_contacts (id, user_id, contact_user_id, custom_name, phone_number)
+       VALUES (?, ?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE
+         custom_name = VALUES(custom_name),
+         phone_number = VALUES(phone_number)`,
+      [contactRecordId, userId, targetUserId, name || null, cleanPhone]
+    );
+
+    // 4. Return direct conversation
+    return this.getOrCreateDirectConversation(userId, targetUserId);
+  }
+
   static async createGroupConversation(userId, payload) {
     const { name, icon, memberIds = [], description = '' } = payload;
     const conversationId = crypto.randomUUID();
@@ -777,6 +840,26 @@ export class ConnectService {
       conversationId,
       readByUserId: userId,
       recipientUserIds: otherMembers.map((m) => m.user_id),
+    };
+  }
+
+  static async markMessageDelivered(userId, conversationId, messageId) {
+    const [msg] = await query(
+      'SELECT sender_id, status FROM connect_messages WHERE id = ? AND conversation_id = ? LIMIT 1',
+      [messageId, conversationId]
+    );
+
+    if (msg && msg.status === 'sent') {
+      await query(
+        "UPDATE connect_messages SET status = 'delivered' WHERE id = ?",
+        [messageId]
+      );
+    }
+
+    return {
+      senderId: msg?.sender_id,
+      conversationId,
+      messageId,
     };
   }
 }

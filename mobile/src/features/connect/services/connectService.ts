@@ -88,6 +88,14 @@ class ConnectService {
     return json.data;
   }
 
+  async startContactConversation(contact: { name: string; phone: string }): Promise<ConnectConversation> {
+    const json = await this.request(apiConfig.endpoints.connect.contactConversation, {
+      method: 'POST',
+      body: JSON.stringify(contact),
+    });
+    return json.data;
+  }
+
   async createGroupConversation(payload: {
     name: string;
     memberIds: string[];

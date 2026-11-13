@@ -38,21 +38,33 @@ class AuthService {
 
     // Check phone existence using space/punctuation-insensitive matching
     const existingPhone = await this.findByNormalizedPhone(cleanPhone);
-    if (existingPhone.length > 0) {
-      const err = new Error('An account with this phone number already exists.');
-      err.statusCode = 409;
-      err.code = 'PHONE_ALREADY_EXISTS';
-      throw err;
-    }
-
-    const userId = crypto.randomUUID();
+    let userId;
     const passwordHash = await hashPassword(password);
 
-    await query(
-      `INSERT INTO users (id, name, email, phone, password_hash, is_email_verified, is_phone_verified, account_status, terms_accepted)
-       VALUES (?, ?, ?, ?, ?, 0, 0, 'active', 1)`,
-      [userId, name.trim(), cleanEmail, cleanPhone, passwordHash]
-    );
+    if (existingPhone.length > 0) {
+      if (existingPhone[0].email && existingPhone[0].email.endsWith('@lifeos.internal')) {
+        // Upgrade contact placeholder to a real user account
+        userId = existingPhone[0].id;
+        await query(
+          `UPDATE users
+           SET name = ?, email = ?, password_hash = ?, terms_accepted = 1, updated_at = NOW()
+           WHERE id = ?`,
+          [name.trim(), cleanEmail, passwordHash, userId]
+        );
+      } else {
+        const err = new Error('An account with this phone number already exists.');
+        err.statusCode = 409;
+        err.code = 'PHONE_ALREADY_EXISTS';
+        throw err;
+      }
+    } else {
+      userId = crypto.randomUUID();
+      await query(
+        `INSERT INTO users (id, name, email, phone, password_hash, is_email_verified, is_phone_verified, account_status, terms_accepted)
+         VALUES (?, ?, ?, ?, ?, 0, 0, 'active', 1)`,
+        [userId, name.trim(), cleanEmail, cleanPhone, passwordHash]
+      );
+    }
 
     const user = await ProfileService.getUserById(userId);
 

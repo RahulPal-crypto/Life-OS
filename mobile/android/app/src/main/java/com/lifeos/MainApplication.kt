@@ -20,6 +20,7 @@ class MainApplication : Application(), ReactApplication {
           add(ActivityTimerPackage())
           add(MemoriesVaultPackage())
           add(ConnectContactsPackage())
+          add(ConnectStoragePackage())
         },
     )
   }

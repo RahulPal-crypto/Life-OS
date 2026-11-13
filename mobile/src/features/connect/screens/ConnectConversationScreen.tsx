@@ -11,12 +11,15 @@ import {
   Alert,
   Image,
   TouchableOpacity,
+  Linking,
+  StatusBar,
 } from 'react-native';
 import { Text } from '../../../components';
 import { colors, spacing, borderRadius } from '../../../theme';
 import { ConnectConversation, ConnectMessage, ConnectMessageType } from '../types';
 import { connectService } from '../services/connectService';
 import { connectSocketService } from '../services/connectSocketService';
+import { connectLocalStorage } from '../services/connectLocalStorage';
 import {
   connectMediaNative,
   formatFileSize,
@@ -62,48 +65,80 @@ export const ConnectConversationScreen: React.FC<ConnectConversationScreenProps>
   useEffect(() => {
     let mounted = true;
 
-    // 1. Fetch initial message history
+    // 1. WhatsApp Instant Load: Read existing messages from local phone database (0ms latency)
+    connectLocalStorage.getMessages(conversation.id, 50).then((localHistory) => {
+      if (mounted && localHistory && localHistory.length > 0) {
+        setMessages(localHistory);
+        setLoading(false);
+      }
+    });
+
+    // 2. Background Sync with Server Relay: fetch latest messages from cloud
     connectService
       .getMessages(conversation.id, { limit: 50 })
-      .then((history) => {
+      .then(async (history) => {
         if (mounted) {
           setMessages(history);
           setLoading(false);
-          // Mark conversation read
-          connectService.markRead(conversation.id);
+          // Persist all incoming history to local phone storage
+          await connectLocalStorage.saveMessages(history);
+          // Mark conversation read locally and on server
+          connectService.markRead(conversation.id).catch(() => {});
           connectSocketService.emitMarkRead(conversation.id);
+          await connectLocalStorage.markConversationRead(conversation.id);
         }
       })
-      .catch((err) => {
+      .catch(() => {
+        // Silently use offline local storage if network fails
         if (mounted) {
           setLoading(false);
-          Alert.alert('Chat Error', err?.message || 'Could not load messages.');
         }
       });
 
-    // 2. Listen for incoming real-time messages
-    const unsubMsg = connectSocketService.onMessage((newMsg) => {
+    // 3. Listen for incoming real-time messages
+    const unsubMsg = connectSocketService.onMessage(async (newMsg) => {
       if (newMsg.conversationId === conversation.id) {
+        // Save to local phone storage immediately
+        await connectLocalStorage.saveMessage(newMsg);
         setMessages((prev) => {
           if (prev.some((m) => m.id === newMsg.id)) return prev;
           return [...prev, newMsg];
         });
-        // Mark incoming message as read
-        connectService.markRead(conversation.id);
+        setTimeout(() => {
+          flatListRef.current?.scrollToEnd({ animated: true });
+        }, 80);
+
+        // Acknowledge delivery & read status back to sender
+        connectSocketService.emitDelivered(conversation.id, newMsg.id);
         connectSocketService.emitMarkRead(conversation.id);
+        connectService.markRead(conversation.id).catch(() => {});
+        await connectLocalStorage.markConversationRead(conversation.id);
       }
     });
 
-    // 3. Listen for typing events
+    // 4. Listen for delivery receipts (updates single tick to double tick ✓✓)
+    const unsubDelivery = connectSocketService.onDeliveryReceipt(async (payload) => {
+      if (payload.conversationId === conversation.id) {
+        await connectLocalStorage.updateMessageStatus(payload.messageId, 'delivered');
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === payload.messageId && m.status === 'sent' ? { ...m, status: 'delivered' } : m
+          )
+        );
+      }
+    });
+
+    // 5. Listen for typing events
     const unsubTyping = connectSocketService.onTyping((payload) => {
       if (payload.conversationId === conversation.id && payload.userId !== currentUserId) {
         setIsPartnerTyping(payload.isTyping);
       }
     });
 
-    // 4. Listen for read receipts (update double ticks to blue)
-    const unsubRead = connectSocketService.onReadReceipt((payload: { conversationId: string; readByUserId: string }) => {
+    // 6. Listen for read receipts (updates double ticks to blue ✓✓)
+    const unsubRead = connectSocketService.onReadReceipt(async (payload: { conversationId: string; readByUserId: string }) => {
       if (payload.conversationId === conversation.id) {
+        await connectLocalStorage.markConversationRead(conversation.id);
         setMessages((prev) =>
           prev.map((m) => (m.isOutgoing ? { ...m, status: 'read' } : m))
         );
@@ -113,6 +148,7 @@ export const ConnectConversationScreen: React.FC<ConnectConversationScreenProps>
     return () => {
       mounted = false;
       unsubMsg();
+      unsubDelivery();
       unsubTyping();
       unsubRead();
       if (recordingTimerRef.current) clearInterval(recordingTimerRef.current);
@@ -138,9 +174,9 @@ export const ConnectConversationScreen: React.FC<ConnectConversationScreenProps>
     setInputText('');
     setSending(true);
 
-    // Optimistic message in list
+    const tempId = `local_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
     const tempMsg: ConnectMessage = {
-      id: `temp_${Date.now()}`,
+      id: tempId,
       conversationId: conversation.id,
       senderId: currentUserId,
       senderName: 'You',
@@ -153,19 +189,26 @@ export const ConnectConversationScreen: React.FC<ConnectConversationScreenProps>
       isOutgoing: true,
     };
 
+    // 1. WhatsApp Instant Save: Write directly to phone's local SQLite DB
+    await connectLocalStorage.saveMessage(tempMsg);
     setMessages((prev) => [...prev, tempMsg]);
 
+    setTimeout(() => {
+      flatListRef.current?.scrollToEnd({ animated: true });
+    }, 60);
+
     try {
-      // Send via socket first for ultra-low latency, or fallback to REST
-      const socketSuccess = connectSocketService.sendSocketMessage(conversation.id, cleanContent);
-      if (!socketSuccess) {
-        const saved = await connectService.sendMessage(conversation.id, cleanContent);
+      // 2. Authoritative persistence on server relay and live WebSocket broadcast
+      const saved = await connectService.sendMessage(conversation.id, cleanContent);
+      if (saved?.id) {
+        await connectLocalStorage.deleteMessage(tempId);
+        await connectLocalStorage.saveMessage(saved);
         setMessages((prev) =>
-          prev.map((m) => (m.id === tempMsg.id ? saved : m))
+          prev.map((m) => (m.id === tempId ? saved : m))
         );
       }
     } catch {
-      // Keep optimistic message
+      // Offline mode: message remains permanently saved in local SQLite with status 'sent'
     } finally {
       setSending(false);
       setTimeout(() => {
@@ -239,13 +282,19 @@ export const ConnectConversationScreen: React.FC<ConnectConversationScreenProps>
         isOutgoing: true,
       };
 
+      // 1. WhatsApp Local Storage: Save media message immediately
+      await connectLocalStorage.saveMessage(tempMediaMsg);
       setMessages((prev) => [...prev, tempMediaMsg]);
 
-      // Save via service
+      // 2. Transmit to server relay
       const savedMsg = await connectService.sendMessage(conversation.id, payload);
-      setMessages((prev) =>
-        prev.map((m) => (m.id === tempMediaMsg.id ? savedMsg : m))
-      );
+      if (savedMsg?.id) {
+        await connectLocalStorage.deleteMessage(tempMediaMsg.id);
+        await connectLocalStorage.saveMessage(savedMsg);
+        setMessages((prev) =>
+          prev.map((m) => (m.id === tempMediaMsg.id ? savedMsg : m))
+        );
+      }
 
       // Notify via socket
       connectSocketService.sendSocketMessage(conversation.id, payload);
@@ -519,7 +568,9 @@ export const ConnectConversationScreen: React.FC<ConnectConversationScreenProps>
               ? 'typing...'
               : conversation.isOnline
               ? 'online'
-              : conversation.displayHeadline}
+              : conversation.displayHeadline === 'Phone Contact'
+              ? 'mobile contact'
+              : (conversation.displayHeadline || 'offline')}
           </Text>
         </View>
 
@@ -543,6 +594,28 @@ export const ConnectConversationScreen: React.FC<ConnectConversationScreenProps>
         <View style={styles.uploadingBanner}>
           <ActivityIndicator size="small" color="#FFFFFF" />
           <Text style={styles.uploadingText}>{uploadingStatus}</Text>
+        </View>
+      )}
+
+      {/* Phone Contact Info Banner */}
+      {conversation.displayHeadline === 'Phone Contact' && (
+        <View style={styles.phoneContactNotice}>
+          <Text variant="caption" color="#6D28D9" style={styles.phoneContactNoticeText}>
+            💬 Messages are saved here. Invite {conversation.displayName} to join Life OS
+          </Text>
+          <Pressable
+            onPress={() => {
+              const text = encodeURIComponent(
+                `Hey ${conversation.displayName}! Let's chat on Life OS: https://github.com/RahulPal-crypto/Life-OS/releases`
+              );
+              Linking.openURL(`whatsapp://send?text=${text}`).catch(() => {
+                Linking.openURL(`sms:?body=${text}`);
+              });
+            }}
+            style={styles.inviteMiniPill}
+          >
+            <Text style={styles.inviteMiniPillText}>Invite</Text>
+          </Pressable>
         </View>
       )}
 
@@ -670,8 +743,9 @@ const styles = StyleSheet.create({
   header: {
     flexDirection: 'row',
     alignItems: 'center',
+    paddingTop: Platform.OS === 'android' ? (StatusBar.currentHeight || 24) + 6 : spacing.sm + 2,
+    paddingBottom: spacing.sm + 2,
     paddingHorizontal: spacing.sm + 2,
-    paddingVertical: spacing.sm + 2,
     backgroundColor: '#FFFFFF',
     borderBottomWidth: 1,
     borderBottomColor: '#E2E8F0',
@@ -741,6 +815,33 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '600',
     color: '#FFFFFF',
+  },
+  phoneContactNotice: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: '#F3E8FF',
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderBottomWidth: 1,
+    borderBottomColor: '#E9D5FF',
+  },
+  phoneContactNoticeText: {
+    fontSize: 11,
+    flex: 1,
+    marginRight: 8,
+    fontWeight: '500',
+  },
+  inviteMiniPill: {
+    backgroundColor: '#7C3AED',
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 12,
+  },
+  inviteMiniPillText: {
+    fontSize: 11,
+    color: '#FFFFFF',
+    fontWeight: '700',
   },
   wallpaper: {
     flex: 1,
@@ -940,7 +1041,8 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     paddingHorizontal: 10,
-    paddingVertical: 8,
+    paddingTop: 8,
+    paddingBottom: Platform.OS === 'android' ? 12 : 8,
     backgroundColor: '#FFFFFF',
     borderTopWidth: 1,
     borderTopColor: '#E2E8F0',

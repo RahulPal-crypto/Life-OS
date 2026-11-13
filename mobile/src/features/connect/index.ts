@@ -3,6 +3,7 @@ export * from './services/connectService';
 export * from './services/connectSocketService';
 export * from './services/connectContactsNative';
 export * from './services/connectMediaNative';
+export * from './services/connectLocalStorage';
 export * from './components/ConnectSecurityModal';
 export * from './components/NewChatModal';
 export * from './components/CreateGroupModal';

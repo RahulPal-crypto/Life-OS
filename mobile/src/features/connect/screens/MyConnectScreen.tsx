@@ -23,6 +23,7 @@ import {
 import { connectService } from '../services/connectService';
 import { connectSocketService } from '../services/connectSocketService';
 import { connectContactsNative } from '../services/connectContactsNative';
+import { connectLocalStorage } from '../services/connectLocalStorage';
 import { ConnectSecurityModal } from '../components/ConnectSecurityModal';
 import { NewChatModal } from '../components/NewChatModal';
 import { CreateGroupModal } from '../components/CreateGroupModal';
@@ -86,16 +87,24 @@ export const MyConnectScreen: React.FC<MyConnectScreenProps> = ({
       });
   }, []);
 
-  // 2. Load conversations and auto-connect WebSocket
+  // 2. Load conversations (Local phone database first, then background cloud sync)
   const loadData = useCallback(async (silent = false) => {
     try {
       if (!silent) setLoading(true);
+
+      // WhatsApp Instant Load: Read immediately from local SQLite database (0ms)
+      const localList = await connectLocalStorage.getConversations();
+      if (localList && localList.length > 0) {
+        setConversations(localList);
+        if (!silent) setLoading(false);
+      }
+
+      // Background Cloud Sync: fetch latest from server relay
       const list = await connectService.getConversations();
       setConversations(list);
-    } catch (err: any) {
-      if (!silent) {
-        Alert.alert('Connect', err?.message || 'Unable to load chats.');
-      }
+      await connectLocalStorage.saveConversations(list);
+    } catch {
+      // If offline, silently use local conversations without error popups
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -113,9 +122,15 @@ export const MyConnectScreen: React.FC<MyConnectScreenProps> = ({
       connectSocketService.connect(token);
     }
 
-    // Real-time message listener to update chat snippet & badge
-    const unsubMsg = connectSocketService.onMessage(() => {
-      loadData(true);
+    // Real-time message listener to update local DB and chat snippet & badge
+    const unsubMsg = connectSocketService.onMessage(async (msg) => {
+      await connectLocalStorage.saveMessage(msg);
+      const localList = await connectLocalStorage.getConversations();
+      if (localList && localList.length > 0) {
+        setConversations(localList);
+      } else {
+        loadData(true);
+      }
     });
 
     return () => {
@@ -172,10 +187,26 @@ export const MyConnectScreen: React.FC<MyConnectScreenProps> = ({
     setNewChatVisible(false);
     try {
       const conv = await connectService.createDirectConversation(targetUser.id);
+      await connectLocalStorage.saveConversation(conv);
       setActiveConversation(conv);
       loadData(true);
     } catch (err: any) {
       Alert.alert('Chat Error', err?.message || 'Could not start conversation.');
+    }
+  };
+
+  const handleSelectOtherContactForChat = async (contact: ConnectOtherContact) => {
+    setNewChatVisible(false);
+    try {
+      const conv = await connectService.startContactConversation({
+        name: contact.name,
+        phone: contact.phone,
+      });
+      await connectLocalStorage.saveConversation(conv);
+      setActiveConversation(conv);
+      loadData(true);
+    } catch (err: any) {
+      Alert.alert('Chat Error', err?.message || 'Could not start conversation with contact.');
     }
   };
 
@@ -490,6 +521,7 @@ export const MyConnectScreen: React.FC<MyConnectScreenProps> = ({
           loading={contactsLoading}
           onRefreshContacts={syncPhoneContacts}
           onSelectUser={handleSelectContactForChat}
+          onSelectOtherContact={handleSelectOtherContactForChat}
           onOpenCreateGroup={() => {
             setNewChatVisible(false);
             setCreateGroupVisible(true);

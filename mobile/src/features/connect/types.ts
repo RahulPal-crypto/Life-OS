@@ -47,6 +47,7 @@ export interface ConnectConversation {
 }
 
 export type ConnectMessageType = 'text' | 'image' | 'video' | 'document' | 'audio' | 'system';
+export type ConnectMessageStatus = 'sent' | 'delivered' | 'read';
 
 export interface ConnectMessage {
   id: string;
@@ -62,7 +63,7 @@ export interface ConnectMessage {
   mimeType?: string | null;
   mediaDuration?: number | null;
   thumbnailUrl?: string | null;
-  status: 'sent' | 'delivered' | 'read';
+  status: ConnectMessageStatus;
   replyToId: string | null;
   createdAt: string;
   isOutgoing: boolean;

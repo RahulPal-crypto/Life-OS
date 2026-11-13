@@ -9,6 +9,8 @@ import {
   ActivityIndicator,
   Linking,
   Alert,
+  Platform,
+  StatusBar,
 } from 'react-native';
 import { Text } from '../../../components';
 import { colors, spacing, borderRadius } from '../../../theme';
@@ -22,6 +24,7 @@ interface NewChatModalProps {
   loading: boolean;
   onRefreshContacts: () => void;
   onSelectUser: (user: ConnectUserContact) => void;
+  onSelectOtherContact?: (contact: ConnectOtherContact) => void;
   onOpenCreateGroup: () => void;
   onSearchGlobal: (query: string) => Promise<ConnectUserContact[]>;
 }
@@ -34,6 +37,7 @@ export const NewChatModal: React.FC<NewChatModalProps> = ({
   loading,
   onRefreshContacts,
   onSelectUser,
+  onSelectOtherContact,
   onOpenCreateGroup,
   onSearchGlobal,
 }) => {
@@ -104,7 +108,7 @@ export const NewChatModal: React.FC<NewChatModalProps> = ({
               Select Contact
             </Text>
             <Text variant="caption" color="#64748B" style={styles.headerSub}>
-              {registeredUsers.length} on Life OS • {otherContacts.length} contacts
+              {registeredUsers.length + otherContacts.length} contacts
             </Text>
           </View>
           <Pressable onPress={onRefreshContacts} style={styles.refreshBtn}>
@@ -193,22 +197,13 @@ export const NewChatModal: React.FC<NewChatModalProps> = ({
               </View>
             )}
 
-            {/* Contacts on Life OS */}
-            <View style={styles.section}>
-              <Text variant="caption" color="#475569" style={styles.sectionHeader}>
-                CONTACTS ON LIFE OS ({filteredRegistered.length})
-              </Text>
-              {filteredRegistered.length === 0 ? (
-                <View style={styles.emptyCard}>
-                  <Text style={styles.emptyIcon}>🔍</Text>
-                  <Text variant="caption" color="#64748B" align="center" style={styles.emptyText}>
-                    {cleanQuery
-                      ? 'No matching registered contacts found.'
-                      : 'None of your contacts are on Life OS yet. Invite them below!'}
-                  </Text>
-                </View>
-              ) : (
-                filteredRegistered.map((user) => (
+            {/* Contacts on Life OS (if any registered contacts exist) */}
+            {filteredRegistered.length > 0 && (
+              <View style={styles.section}>
+                <Text variant="caption" color="#475569" style={styles.sectionHeader}>
+                  REGISTERED ON LIFE OS ({filteredRegistered.length})
+                </Text>
+                {filteredRegistered.map((user) => (
                   <Pressable
                     key={user.id}
                     onPress={() => onSelectUser(user)}
@@ -233,24 +228,36 @@ export const NewChatModal: React.FC<NewChatModalProps> = ({
                         {user.headline}
                       </Text>
                     </View>
-                    <Text variant="caption" color="#7C3AED" style={styles.chatBadge}>
-                      Message
-                    </Text>
+                    <View style={styles.chatBadge}>
+                      <Text variant="caption" color="#7C3AED" style={styles.chatBadgeText}>
+                        Chat ›
+                      </Text>
+                    </View>
                   </Pressable>
-                ))
-              )}
-            </View>
+                ))}
+              </View>
+            )}
 
-            {/* Invite to Life OS Section */}
-            {filteredOther.length > 0 && (
+            {/* All Phone Contacts — 1-Tap Direct Chat (Option A) */}
+            {filteredOther.length > 0 ? (
               <View style={styles.section}>
                 <Text variant="caption" color="#475569" style={styles.sectionHeader}>
-                  INVITE TO LIFE OS ({filteredOther.length})
+                  PHONE CONTACTS ({filteredOther.length})
                 </Text>
                 {filteredOther.map((contact, index) => (
-                  <View key={`${contact.phone}_${index}`} style={styles.inviteRow}>
-                    <View style={[styles.avatar, styles.avatarGray]}>
-                      <Text style={[styles.avatarText, { color: '#64748B' }]}>
+                  <Pressable
+                    key={`${contact.phone}_${index}`}
+                    onPress={() => {
+                      if (onSelectOtherContact) {
+                        onSelectOtherContact(contact);
+                      } else {
+                        handleInviteWhatsApp(contact);
+                      }
+                    }}
+                    style={styles.contactRow}
+                  >
+                    <View style={[styles.avatar, styles.avatarContact]}>
+                      <Text style={styles.avatarContactText}>
                         {contact.name.slice(0, 1).toUpperCase()}
                       </Text>
                     </View>
@@ -262,17 +269,35 @@ export const NewChatModal: React.FC<NewChatModalProps> = ({
                         {contact.phone}
                       </Text>
                     </View>
-                    <Pressable
-                      onPress={() => handleInviteWhatsApp(contact)}
-                      style={styles.inviteBtn}
-                    >
-                      <Text variant="caption" color="#7C3AED" style={styles.inviteText}>
-                        Invite
-                      </Text>
-                    </Pressable>
-                  </View>
+
+                    <View style={styles.contactActionsRow}>
+                      <View style={styles.chatBadge}>
+                        <Text variant="caption" color="#7C3AED" style={styles.chatBadgeText}>
+                          Chat ›
+                        </Text>
+                      </View>
+                      <Pressable
+                        onPress={() => handleInviteWhatsApp(contact)}
+                        hitSlop={8}
+                        style={styles.inviteMiniBtn}
+                      >
+                        <Text style={styles.inviteMiniIcon}>💬</Text>
+                      </Pressable>
+                    </View>
+                  </Pressable>
                 ))}
               </View>
+            ) : (
+              filteredRegistered.length === 0 && (
+                <View style={styles.emptyCard}>
+                  <Text style={styles.emptyIcon}>🔍</Text>
+                  <Text variant="caption" color="#64748B" align="center" style={styles.emptyText}>
+                    {cleanQuery
+                      ? 'No contacts found matching your search.'
+                      : 'No phone contacts found. Tap refresh above to sync.'}
+                  </Text>
+                </View>
+              )
             )}
           </ScrollView>
         )}
@@ -285,6 +310,7 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: '#F8FAFC',
+    paddingTop: Platform.OS === 'android' ? (StatusBar.currentHeight || 24) : 0,
   },
   header: {
     flexDirection: 'row',
@@ -461,8 +487,36 @@ const styles = StyleSheet.create({
     fontSize: 12,
   },
   chatBadge: {
+    backgroundColor: '#EDE9FE',
+    paddingHorizontal: 12,
+    paddingVertical: 5,
+    borderRadius: 12,
+  },
+  chatBadgeText: {
     fontSize: 12,
     fontWeight: '700',
+    color: '#7C3AED',
+  },
+  avatarContact: {
+    backgroundColor: '#F3E8FF',
+  },
+  avatarContactText: {
+    fontSize: 16,
+    fontWeight: '800',
+    color: '#7C3AED',
+  },
+  contactActionsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    columnGap: 8,
+  },
+  inviteMiniBtn: {
+    padding: 6,
+    backgroundColor: '#F1F5F9',
+    borderRadius: 14,
+  },
+  inviteMiniIcon: {
+    fontSize: 14,
   },
   chatLink: {
     fontSize: 12,

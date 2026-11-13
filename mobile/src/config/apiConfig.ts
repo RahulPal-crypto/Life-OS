@@ -73,6 +73,7 @@ export const apiConfig = {
       contactsSync: '/connect/contacts/sync',
       contactsSearch: '/connect/contacts/search',
       conversations: '/connect/conversations',
+      contactConversation: '/connect/conversations/contact',
       upload: '/connect/upload',
     },
   },

@@ -187,6 +187,20 @@ export function initConnectWebSocketServer(httpServer) {
           }
           return;
         }
+
+        if (event === 'message_delivered') {
+          const { conversationId, messageId } = data || {};
+          if (conversationId && messageId) {
+            const res = await ConnectService.markMessageDelivered(userId, conversationId, messageId);
+            if (res?.senderId) {
+              broadcastToUsers([res.senderId], 'message_delivered', {
+                conversationId,
+                messageId,
+              });
+            }
+          }
+          return;
+        }
       } catch (err) {
         ws.send(
           JSON.stringify({

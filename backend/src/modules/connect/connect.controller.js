@@ -149,6 +149,22 @@ export class ConnectController {
     }
   }
 
+  static async startContactConversation(req, res, next) {
+    try {
+      const { name, phone } = req.body || {};
+      if (!phone) {
+        return sendError(res, 'Phone number is required.', 400, 'PHONE_REQUIRED');
+      }
+      const conv = await ConnectService.getOrCreateContactConversation(req.user.id, { name, phone });
+      return sendSuccess(res, 'Conversation ready.', conv);
+    } catch (err) {
+      if (err.statusCode) {
+        return sendError(res, err.message, err.statusCode, err.code);
+      }
+      next(err);
+    }
+  }
+
   // 4. Messages & Media
   static async uploadMedia(req, res, next) {
     try {
