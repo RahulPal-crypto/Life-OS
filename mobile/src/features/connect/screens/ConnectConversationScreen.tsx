@@ -17,6 +17,7 @@ import {
 import { Text } from '../../../components';
 import { colors, spacing, borderRadius } from '../../../theme';
 import { ConnectConversation, ConnectMessage, ConnectMessageType } from '../types';
+import { authService } from '../../auth';
 import { connectService } from '../services/connectService';
 import { connectSocketService } from '../services/connectSocketService';
 import { connectLocalStorage } from '../services/connectLocalStorage';
@@ -69,6 +70,12 @@ export const ConnectConversationScreen: React.FC<ConnectConversationScreenProps>
 
   useEffect(() => {
     let mounted = true;
+
+    // Ensure live WebSocket connection is active
+    const token = authService.getTokens()?.accessToken;
+    if (token) {
+      connectSocketService.connect(token);
+    }
 
     // 1. WhatsApp Instant Load: Read existing messages from local phone database (0ms latency)
     connectLocalStorage.getMessages(conversation.id, 50).then((localHistory) => {
@@ -212,8 +219,13 @@ export const ConnectConversationScreen: React.FC<ConnectConversationScreenProps>
           prev.map((m) => (m.id === tempId ? saved : m))
         );
       }
-    } catch {
-      // Offline mode: message remains permanently saved in local SQLite with status 'sent'
+    } catch (err: any) {
+      console.warn('[Connect] Message send failed:', err?.message || err);
+      Alert.alert('Message Failed', err?.message || 'Could not deliver message. Please check your connection.');
+      await connectLocalStorage.updateMessageStatus(tempId, 'failed');
+      setMessages((prev) =>
+        prev.map((m) => (m.id === tempId ? { ...m, status: 'failed' } : m))
+      );
     } finally {
       setSending(false);
       setTimeout(() => {

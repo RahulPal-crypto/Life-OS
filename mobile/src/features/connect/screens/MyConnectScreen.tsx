@@ -87,13 +87,18 @@ export const MyConnectScreen: React.FC<MyConnectScreenProps> = ({
       .getSecurityStatus()
       .then((status) => {
         setSecurityStatus(status);
-        if (!connectService.isUnlocked()) {
+        if (status.isConfigured && !connectService.isUnlocked()) {
           setLockModalVisible(true);
+        } else {
+          setIsUnlocked(true);
+          connectService.setUnlocked(true);
+          setLockModalVisible(false);
         }
       })
       .catch(() => {
         // Fallback: unlock if security endpoint unavailable
         setIsUnlocked(true);
+        connectService.setUnlocked(true);
         setLockModalVisible(false);
       });
   }, []);
@@ -152,12 +157,7 @@ export const MyConnectScreen: React.FC<MyConnectScreenProps> = ({
     // Real-time message listener to update local DB and chat snippet & badge
     const unsubMsg = connectSocketService.onMessage(async (msg) => {
       await connectLocalStorage.saveMessage(msg);
-      const localList = await connectLocalStorage.getConversations();
-      if (localList && localList.length > 0) {
-        setConversations(localList);
-      } else {
-        loadData(true);
-      }
+      loadData(true);
     });
 
     // Real-time call signaling listeners (Phase 3)
@@ -267,6 +267,37 @@ export const MyConnectScreen: React.FC<MyConnectScreenProps> = ({
       loadData(true);
     } catch (err: any) {
       Alert.alert('Chat Error', err?.message || 'Could not start conversation with contact.');
+    }
+  };
+
+  const handleStartSelfChat = async () => {
+    if (!user?.id) {
+      Alert.alert('Sign In', 'Please sign in to message yourself.');
+      return;
+    }
+    setNewChatVisible(false);
+    try {
+      const conv = await connectService.createDirectConversation(user.id);
+      await connectLocalStorage.saveConversation(conv);
+      setActiveConversation(conv);
+      loadData(true);
+    } catch (err: any) {
+      Alert.alert('Chat Error', err?.message || 'Could not start self chat.');
+    }
+  };
+
+  const handleStartChatByPhone = async (phoneNumber: string) => {
+    setNewChatVisible(false);
+    try {
+      const conv = await connectService.startContactConversation({
+        name: phoneNumber,
+        phone: phoneNumber,
+      });
+      await connectLocalStorage.saveConversation(conv);
+      setActiveConversation(conv);
+      loadData(true);
+    } catch (err: any) {
+      Alert.alert('Chat Error', err?.message || 'Could not start conversation with phone number.');
     }
   };
 
@@ -657,79 +688,72 @@ export const MyConnectScreen: React.FC<MyConnectScreenProps> = ({
           ) : (
             /* Chats Tab: Stories & Conversations */
             <>
-              {/* Stories / Moments Tray (Phase 4 Ready) */}
+              {/* Quick Contacts & Self-Chat Tray */}
               <View style={styles.storiesSection}>
                 <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.storiesRow}>
-                  {/* My Status Bubble */}
+                  {/* My Notes / Self Chat Bubble */}
                   <Pressable
-                    onPress={() =>
-                      Alert.alert(
-                        'My Status',
-                        'Post 24-hour disappearing photos, stories & moments arriving in Phase 4!'
-                      )
-                    }
+                    onPress={handleStartSelfChat}
                     style={styles.storyItem}
                   >
                     <View style={styles.myStatusRing}>
-                      <Text style={styles.myStatusPlus}>+</Text>
+                      <Text style={styles.myStatusPlus}>💬</Text>
                     </View>
                     <Text variant="caption" color="#0F172A" style={styles.storyName}>
-                      My Status
+                      Message You
                     </Text>
                   </Pressable>
 
-              {/* Sample / Contact Moments circles */}
-              {registeredContacts.slice(0, 5).map((c) => (
-                <Pressable
-                  key={c.id}
-                  onPress={() =>
-                    Alert.alert(
-                      `${c.name}'s Status`,
-                      'Moments & Stories feed arriving in Phase 4!'
-                    )
-                  }
-                  style={styles.storyItem}
-                >
-                  <View style={styles.storyRing}>
-                    <View style={styles.storyAvatar}>
-                      <Text style={styles.storyAvatarText}>
-                        {c.name.slice(0, 1).toUpperCase()}
+                  {/* Registered Contact circles for 1-Tap Direct Chat */}
+                  {registeredContacts.slice(0, 5).map((c) => (
+                    <Pressable
+                      key={c.id}
+                      onPress={() => handleSelectContactForChat(c)}
+                      style={styles.storyItem}
+                    >
+                      <View style={styles.storyRing}>
+                        <View style={styles.storyAvatar}>
+                          <Text style={styles.storyAvatarText}>
+                            {c.name.slice(0, 1).toUpperCase()}
+                          </Text>
+                        </View>
+                      </View>
+                      <Text
+                        variant="caption"
+                        color="#0F172A"
+                        numberOfLines={1}
+                        style={styles.storyName}
+                      >
+                        {c.phoneBookName || c.name.split(' ')[0]}
                       </Text>
+                    </Pressable>
+                  ))}
+                </ScrollView>
+              </View>
+
+              {/* Conversations List */}
+              <View style={styles.conversationsBlock}>
+                {loading ? (
+                  <ActivityIndicator size="small" color="#7C3AED" style={styles.loader} />
+                ) : filteredConversations.length === 0 ? (
+                  <View style={styles.emptyCard}>
+                    <Text style={styles.emptyIcon}>💬</Text>
+                    <Text variant="h3" color="#0F172A" style={styles.emptyTitle}>
+                      {searchQuery ? 'No matching chats found' : 'No conversations yet'}
+                    </Text>
+                    <Text variant="caption" color="#64748B" align="center" style={styles.emptySub}>
+                      Start chatting with any Life OS user or message yourself to save notes!
+                    </Text>
+                    <View style={styles.emptyActionsRow}>
+                      <Pressable onPress={handleStartSelfChat} style={styles.selfChatBtn}>
+                        <Text style={styles.selfChatBtnText}>💬 Message Yourself</Text>
+                      </Pressable>
+                      <Pressable onPress={handleOpenNewChatModal} style={styles.startChatBtn}>
+                        <Text style={styles.startChatBtnText}>Find Contacts ›</Text>
+                      </Pressable>
                     </View>
                   </View>
-                  <Text
-                    variant="caption"
-                    color="#0F172A"
-                    numberOfLines={1}
-                    style={styles.storyName}
-                  >
-                    {c.phoneBookName || c.name.split(' ')[0]}
-                  </Text>
-                </Pressable>
-              ))}
-            </ScrollView>
-          </View>
-
-          {/* Conversations List */}
-          <View style={styles.conversationsBlock}>
-            {loading ? (
-              <ActivityIndicator size="small" color="#7C3AED" style={styles.loader} />
-            ) : filteredConversations.length === 0 ? (
-              <View style={styles.emptyCard}>
-                <Text style={styles.emptyIcon}>💬</Text>
-                <Text variant="h3" color="#0F172A" style={styles.emptyTitle}>
-                  {searchQuery ? 'No matching chats found' : 'No conversations yet'}
-                </Text>
-                <Text variant="caption" color="#64748B" align="center" style={styles.emptySub}>
-                  Tap the floating chat button 💬 below to start chatting with your phone contacts on Life OS!
-                </Text>
-                <Pressable onPress={handleOpenNewChatModal} style={styles.startChatBtn}>
-                  <Text variant="caption" color="#FFFFFF" style={styles.startChatBtnText}>
-                    Find Contacts on Life OS ›
-                  </Text>
-                </Pressable>
-              </View>
-            ) : (
+                ) : (
               filteredConversations.map((conv) => {
                 const timeStr = conv.lastMessageAt
                   ? new Date(conv.lastMessageAt).toLocaleTimeString([], {
@@ -819,12 +843,15 @@ export const MyConnectScreen: React.FC<MyConnectScreenProps> = ({
         <NewChatModal
           visible={newChatVisible}
           onClose={() => setNewChatVisible(false)}
+          currentUser={user}
           registeredUsers={registeredContacts}
           otherContacts={otherContacts}
           loading={contactsLoading}
           onRefreshContacts={syncPhoneContacts}
           onSelectUser={handleSelectContactForChat}
           onSelectOtherContact={handleSelectOtherContactForChat}
+          onStartSelfChat={handleStartSelfChat}
+          onStartChatByPhone={handleStartChatByPhone}
           onOpenCreateGroup={() => {
             setNewChatVisible(false);
             setCreateGroupVisible(true);
@@ -1132,6 +1159,26 @@ const styles = StyleSheet.create({
     fontSize: 12.5,
     lineHeight: 18,
     marginBottom: spacing.md,
+  },
+  emptyActionsRow: {
+    flexDirection: 'row',
+    gap: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexWrap: 'wrap',
+  },
+  selfChatBtn: {
+    backgroundColor: '#EDE9FE',
+    borderWidth: 1.5,
+    borderColor: '#7C3AED',
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 20,
+  },
+  selfChatBtnText: {
+    color: '#7C3AED',
+    fontSize: 13,
+    fontWeight: '800',
   },
   startChatBtn: {
     backgroundColor: '#7C3AED',

@@ -236,22 +236,23 @@ export class ConnectService {
     const rows = await query(
       `SELECT id, name, phone, email, profile_image, headline
        FROM users
-       WHERE id != ? AND (
+       WHERE (
          name LIKE ? OR
          email LIKE ? OR
          phone LIKE ?
        )
        LIMIT 20`,
-      [userId, `%${q}%`, `%${q}%`, `%${q}%`]
+      [`%${q}%`, `%${q}%`, `%${q}%`]
     );
 
     return rows.map((r) => ({
       id: r.id,
-      name: r.name,
+      name: r.id === userId ? `${r.name} (You)` : r.name,
       phone: r.phone,
       email: r.email,
       profileImage: r.profile_image,
-      headline: r.headline || 'Hey there! I am using Life OS',
+      headline: r.id === userId ? 'Message yourself' : (r.headline || 'Hey there! I am using Life OS'),
+      isSelf: r.id === userId,
     }));
   }
 
@@ -343,12 +344,18 @@ export class ConnectService {
 
       if (!isGroup) {
         // Direct 1-to-1: Pick the other participant
-        const otherMember = allMembers.find((m) => m.user_id !== userId) || allMembers[0];
+        const otherMember = allMembers.find((m) => m.user_id !== userId);
         if (otherMember) {
           displayName = otherMember.name || 'User';
           displayAvatar = otherMember.profile_image || null;
           displayHeadline = otherMember.headline || 'Hey there! I am using Life OS';
           partnerUserId = otherMember.user_id;
+        } else if (allMembers.length > 0) {
+          // Self-conversation: Message Yourself
+          displayName = `${allMembers[0].name} (You)`;
+          displayAvatar = allMembers[0].profile_image || null;
+          displayHeadline = 'Message yourself';
+          partnerUserId = userId;
         }
       }
 
@@ -385,9 +392,7 @@ export class ConnectService {
   }
 
   static async getOrCreateDirectConversation(userId, targetUserId) {
-    if (userId === targetUserId) {
-      throw createServiceError('Cannot start a direct conversation with yourself.', 400, 'SELF_CHAT_NOT_ALLOWED');
-    }
+    const isSelf = userId === targetUserId;
 
     // Verify target user exists
     const [targetUser] = await query(
@@ -396,6 +401,56 @@ export class ConnectService {
     );
     if (!targetUser) {
       throw createServiceError('User not found.', 404, 'USER_NOT_FOUND');
+    }
+
+    if (isSelf) {
+      // Check if self-conversation already exists
+      const [existingSelf] = await query(
+        `SELECT c.id
+         FROM connect_conversations c
+         JOIN connect_conversation_members m ON m.conversation_id = c.id
+         WHERE c.type = 'direct' AND c.created_by = ?
+         GROUP BY c.id
+         HAVING COUNT(m.id) = 1
+         LIMIT 1`,
+        [userId]
+      );
+
+      if (existingSelf?.id) {
+        return {
+          id: existingSelf.id,
+          type: 'direct',
+          displayName: `${targetUser.name} (You)`,
+          displayAvatar: targetUser.profile_image,
+          displayHeadline: 'Message yourself',
+          partnerUserId: targetUser.id,
+          isGroup: false,
+        };
+      }
+
+      // Create new self-conversation (WhatsApp-style "Message yourself")
+      const conversationId = crypto.randomUUID();
+      await query(
+        `INSERT INTO connect_conversations (id, type, created_by)
+         VALUES (?, 'direct', ?)`,
+        [conversationId, userId]
+      );
+
+      await query(
+        `INSERT INTO connect_conversation_members (id, conversation_id, user_id, role)
+         VALUES (?, ?, ?, 'admin')`,
+        [crypto.randomUUID(), conversationId, userId]
+      );
+
+      return {
+        id: conversationId,
+        type: 'direct',
+        displayName: `${targetUser.name} (You)`,
+        displayAvatar: targetUser.profile_image,
+        displayHeadline: 'Message yourself',
+        partnerUserId: targetUser.id,
+        isGroup: false,
+      };
     }
 
     // Check if a direct conversation already exists between these 2 users
@@ -812,7 +867,7 @@ export class ConnectService {
 
     return {
       message: messageObj,
-      recipientUserIds: otherMembers.map((m) => m.user_id),
+      recipientUserIds: otherMembers.length > 0 ? otherMembers.map((m) => m.user_id) : [userId],
     };
   }
 

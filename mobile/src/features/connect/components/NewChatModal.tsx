@@ -19,12 +19,15 @@ import { ConnectOtherContact, ConnectUserContact } from '../types';
 interface NewChatModalProps {
   visible: boolean;
   onClose: () => void;
+  currentUser?: { id: string; name: string; phone?: string } | null;
   registeredUsers: ConnectUserContact[];
   otherContacts: ConnectOtherContact[];
   loading: boolean;
   onRefreshContacts: () => void;
   onSelectUser: (user: ConnectUserContact) => void;
   onSelectOtherContact?: (contact: ConnectOtherContact) => void;
+  onStartSelfChat?: () => void;
+  onStartChatByPhone?: (phone: string) => void;
   onOpenCreateGroup: () => void;
   onSearchGlobal: (query: string) => Promise<ConnectUserContact[]>;
 }
@@ -32,16 +35,20 @@ interface NewChatModalProps {
 export const NewChatModal: React.FC<NewChatModalProps> = ({
   visible,
   onClose,
+  currentUser,
   registeredUsers,
   otherContacts,
   loading,
   onRefreshContacts,
   onSelectUser,
   onSelectOtherContact,
+  onStartSelfChat,
+  onStartChatByPhone,
   onOpenCreateGroup,
   onSearchGlobal,
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
+  const [directPhone, setDirectPhone] = useState('');
   const [globalResults, setGlobalResults] = useState<ConnectUserContact[]>([]);
   const [searchingGlobal, setSearchingGlobal] = useState(false);
 
@@ -138,7 +145,7 @@ export const NewChatModal: React.FC<NewChatModalProps> = ({
           )}
         </View>
 
-        {/* Action Buttons: New Group */}
+        {/* Quick Actions: New Group & Message Yourself */}
         <View style={styles.quickActions}>
           <Pressable onPress={onOpenCreateGroup} style={styles.actionRow}>
             <View style={[styles.actionIconBox, { backgroundColor: '#EDE9FE' }]}>
@@ -153,6 +160,53 @@ export const NewChatModal: React.FC<NewChatModalProps> = ({
               </Text>
             </View>
           </Pressable>
+
+          {/* WhatsApp-style "Message yourself" */}
+          {Boolean(onStartSelfChat) && (
+            <Pressable onPress={onStartSelfChat} style={styles.actionRow}>
+              <View style={[styles.actionIconBox, { backgroundColor: '#EDE9FE' }]}>
+                <Text style={styles.actionEmoji}>👤</Text>
+              </View>
+              <View style={styles.actionInfo}>
+                <Text variant="caption" color="#0F172A" style={styles.actionLabel}>
+                  {currentUser?.name || 'You'} (You)
+                </Text>
+                <Text variant="caption" color="#64748B" style={styles.actionSub}>
+                  Message yourself • Notes, testing & reminders
+                </Text>
+              </View>
+            </Pressable>
+          )}
+        </View>
+
+        {/* Direct Phone Number Chat Input */}
+        <View style={styles.directPhoneCard}>
+          <Text variant="caption" color="#0F172A" style={styles.directPhoneTitle}>
+            💬 Chat with any Phone Number
+          </Text>
+          <View style={styles.directPhoneRow}>
+            <TextInput
+              value={directPhone}
+              onChangeText={setDirectPhone}
+              placeholder="Enter mobile number (e.g. 9876543210)"
+              placeholderTextColor="#94A3B8"
+              keyboardType="phone-pad"
+              style={styles.directPhoneInput}
+            />
+            <Pressable
+              onPress={() => {
+                const clean = directPhone.replace(/[^0-9+]/g, '').trim();
+                if (clean.length >= 7 && onStartChatByPhone) {
+                  onStartChatByPhone(clean);
+                } else {
+                  Alert.alert('Phone Number', 'Please enter a valid mobile number (at least 7-10 digits).');
+                }
+              }}
+              style={styles.directPhoneBtn}
+            >
+              <Text style={styles.directPhoneBtnText}>Chat ›</Text>
+            </Pressable>
+          </View>
         </View>
 
         {loading ? (
@@ -376,6 +430,43 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: '#E2E8F0',
     paddingVertical: 4,
+  },
+  directPhoneCard: {
+    backgroundColor: '#FFFFFF',
+    paddingHorizontal: spacing.md,
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: '#E2E8F0',
+  },
+  directPhoneTitle: {
+    fontSize: 12.5,
+    fontWeight: '700',
+    marginBottom: 6,
+  },
+  directPhoneRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  directPhoneInput: {
+    flex: 1,
+    backgroundColor: '#F1F5F9',
+    borderRadius: borderRadius.md,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    fontSize: 13,
+    color: '#0F172A',
+  },
+  directPhoneBtn: {
+    backgroundColor: '#7C3AED',
+    paddingHorizontal: 16,
+    paddingVertical: 9,
+    borderRadius: borderRadius.md,
+  },
+  directPhoneBtnText: {
+    color: '#FFFFFF',
+    fontSize: 13,
+    fontWeight: '800',
   },
   actionRow: {
     flexDirection: 'row',
