@@ -8,6 +8,8 @@ import {
   ConnectUserContact,
   ConnectMessageType,
   ConnectMediaUploadResponse,
+  ConnectCallLog,
+  ConnectCallType,
 } from '../types';
 
 class ConnectService {
@@ -189,6 +191,40 @@ class ConnectService {
     } catch {
       // Ignore background read receipt failure
     }
+  }
+
+  // 5. Voice & Video Calls (Phase 3)
+  async initiateCall(payload: {
+    receiverId: string;
+    conversationId?: string | null;
+    callType?: ConnectCallType;
+  }): Promise<any> {
+    const json = await this.request(apiConfig.endpoints.connect.initiateCall, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+    return json.data;
+  }
+
+  async respondCall(callId: string, action: 'accept' | 'decline' | 'busy'): Promise<any> {
+    const json = await this.request(`${apiConfig.endpoints.connect.calls}/${encodeURIComponent(callId)}/respond`, {
+      method: 'POST',
+      body: JSON.stringify({ action }),
+    });
+    return json.data;
+  }
+
+  async endCall(callId: string, durationSeconds = 0): Promise<any> {
+    const json = await this.request(`${apiConfig.endpoints.connect.calls}/${encodeURIComponent(callId)}/end`, {
+      method: 'POST',
+      body: JSON.stringify({ durationSeconds }),
+    });
+    return json.data;
+  }
+
+  async getCallHistory(limit = 50): Promise<ConnectCallLog[]> {
+    const json = await this.request(`${apiConfig.endpoints.connect.callHistory}?limit=${limit}`);
+    return json.data || [];
   }
 }
 

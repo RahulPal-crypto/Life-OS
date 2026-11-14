@@ -36,12 +36,17 @@ interface ConnectConversationScreenProps {
   conversation: ConnectConversation;
   currentUserId: string;
   onBack: () => void;
+  onStartCall?: (
+    callType: 'voice' | 'video',
+    partner: { id: string; name: string; profileImage: string | null; headline?: string | null }
+  ) => void;
 }
 
 export const ConnectConversationScreen: React.FC<ConnectConversationScreenProps> = ({
   conversation,
   currentUserId,
   onBack,
+  onStartCall,
 }) => {
   const [messages, setMessages] = useState<ConnectMessage[]>([]);
   const [inputText, setInputText] = useState('');
@@ -390,9 +395,19 @@ export const ConnectConversationScreen: React.FC<ConnectConversationScreenProps>
 
   const renderMessageItem = ({ item }: { item: ConnectMessage }) => {
     if (item.messageType === 'system') {
+      const isCallMsg =
+        item.content.includes('call') || item.content.includes('📞') || item.content.includes('🎥');
+      const isMissed =
+        item.content.toLowerCase().includes('missed') || item.content.toLowerCase().includes('declined');
+
       return (
-        <View style={styles.systemBubble}>
-          <Text variant="caption" color="#64748B" align="center" style={styles.systemText}>
+        <View style={[styles.systemBubble, isCallMsg && styles.callRecordBubble]}>
+          <Text
+            variant="caption"
+            color={isCallMsg ? (isMissed ? '#EF4444' : '#0F172A') : '#64748B'}
+            align="center"
+            style={[styles.systemText, isCallMsg && styles.callRecordText]}
+          >
             {item.content}
           </Text>
         </View>
@@ -576,13 +591,31 @@ export const ConnectConversationScreen: React.FC<ConnectConversationScreenProps>
 
         {/* Phase 3 Calls */}
         <Pressable
-          onPress={() => Alert.alert('Voice Call', 'HD Voice Calls are arriving in Phase 3!')}
+          onPress={() => {
+            if (onStartCall) {
+              onStartCall('voice', {
+                id: conversation.partnerUserId || conversation.id,
+                name: conversation.displayName,
+                profileImage: conversation.displayAvatar,
+                headline: conversation.displayHeadline,
+              });
+            }
+          }}
           style={styles.headerActionBtn}
         >
           <Text style={styles.actionIcon}>📞</Text>
         </Pressable>
         <Pressable
-          onPress={() => Alert.alert('Video Call', 'HD Video Calls are arriving in Phase 3!')}
+          onPress={() => {
+            if (onStartCall) {
+              onStartCall('video', {
+                id: conversation.partnerUserId || conversation.id,
+                name: conversation.displayName,
+                profileImage: conversation.displayAvatar,
+                headline: conversation.displayHeadline,
+              });
+            }
+          }}
           style={styles.headerActionBtn}
         >
           <Text style={styles.actionIcon}>🎥</Text>
@@ -930,6 +963,19 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 4,
     marginVertical: 4,
+  },
+  callRecordBubble: {
+    backgroundColor: '#F8FAFC',
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    paddingHorizontal: 16,
+    paddingVertical: 6,
+    borderRadius: 16,
+    marginVertical: 6,
+  },
+  callRecordText: {
+    fontSize: 12.5,
+    fontWeight: '700',
   },
   systemText: {
     fontSize: 11,

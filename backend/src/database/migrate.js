@@ -386,6 +386,27 @@ export const runMigrations = async () => {
     `);
     console.log(`[Migration] Table 'connect_contacts' verified.`);
 
+    // 17. Create 'connect_calls' table (Voice & Video Calls Phase 3)
+    await connection.query(`
+      CREATE TABLE IF NOT EXISTS connect_calls (
+        id VARCHAR(36) PRIMARY KEY,
+        caller_id VARCHAR(36) NOT NULL,
+        receiver_id VARCHAR(36) NOT NULL,
+        conversation_id VARCHAR(36) NULL,
+        call_type ENUM('voice', 'video') NOT NULL DEFAULT 'voice',
+        status ENUM('ringing', 'ongoing', 'completed', 'missed', 'declined', 'busy') NOT NULL DEFAULT 'ringing',
+        started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        ended_at TIMESTAMP NULL,
+        duration_seconds INT DEFAULT 0,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        INDEX idx_connect_calls_users (caller_id, receiver_id),
+        INDEX idx_connect_calls_conv (conversation_id),
+        CONSTRAINT fk_call_caller FOREIGN KEY (caller_id) REFERENCES users(id) ON DELETE CASCADE,
+        CONSTRAINT fk_call_receiver FOREIGN KEY (receiver_id) REFERENCES users(id) ON DELETE CASCADE
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    `);
+    console.log(`[Migration] Table 'connect_calls' verified.`);
+
     console.log('[Migration] All Connect tables verified successfully.');
     return true;
   } catch (error) {

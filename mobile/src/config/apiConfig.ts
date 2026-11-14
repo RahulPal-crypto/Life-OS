@@ -75,6 +75,9 @@ export const apiConfig = {
       conversations: '/connect/conversations',
       contactConversation: '/connect/conversations/contact',
       upload: '/connect/upload',
+      initiateCall: '/connect/calls/initiate',
+      calls: '/connect/calls',
+      callHistory: '/connect/calls/history',
     },
   },
 };

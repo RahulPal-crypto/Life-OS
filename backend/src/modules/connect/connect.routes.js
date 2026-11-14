@@ -27,4 +27,10 @@ router.get('/conversations/:id/messages', ConnectController.getMessages);
 router.post('/conversations/:id/messages', ConnectController.sendMessage);
 router.post('/conversations/:id/read', ConnectController.markRead);
 
+// Voice & Video Calls (Phase 3)
+router.post('/calls/initiate', ConnectController.initiateCall);
+router.post('/calls/:id/respond', ConnectController.respondCall);
+router.post('/calls/:id/end', ConnectController.endCall);
+router.get('/calls/history', ConnectController.getCallHistory);
+
 export default router;

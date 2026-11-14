@@ -79,3 +79,48 @@ export interface ConnectMediaUploadResponse {
 }
 
 export type ConnectFilterTab = 'all' | 'unread' | 'groups' | 'favorites';
+
+// Phase 3 Voice & Video Calls Types
+export type ConnectCallType = 'voice' | 'video';
+export type ConnectCallStatus = 'ringing' | 'connecting' | 'ongoing' | 'completed' | 'missed' | 'declined' | 'busy' | 'ended';
+
+export interface ConnectCallLog {
+  id: string;
+  callerId?: string;
+  receiverId?: string;
+  conversationId?: string | null;
+  callType: ConnectCallType;
+  status: ConnectCallStatus;
+  startedAt: string;
+  endedAt: string | null;
+  durationSeconds: number;
+  createdAt: string;
+  isOutgoing: boolean;
+  contactUserId: string;
+  contactName: string;
+  contactAvatar: string | null;
+  contactPhone?: string | null;
+}
+
+export interface ConnectActiveCall {
+  callId: string;
+  conversationId?: string | null;
+  callType: ConnectCallType;
+  status: ConnectCallStatus;
+  caller: {
+    id: string;
+    name: string;
+    profileImage: string | null;
+    headline?: string | null;
+  };
+  receiver: {
+    id: string;
+    name: string;
+    profileImage: string | null;
+    headline?: string | null;
+  };
+  isOutgoing: boolean;
+  durationSeconds: number;
+}
+
+export type ConnectMainTab = 'chats' | 'calls';

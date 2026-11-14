@@ -1,5 +1,5 @@
 import { NativeModules } from 'react-native';
-import { ConnectConversation, ConnectMessage, ConnectMessageStatus } from '../types';
+import { ConnectConversation, ConnectMessage, ConnectMessageStatus, ConnectCallLog } from '../types';
 
 interface NativeConnectStorage {
   saveConversation: (conv: any) => Promise<boolean>;
@@ -12,6 +12,9 @@ interface NativeConnectStorage {
   markConversationRead: (conversationId: string) => Promise<boolean>;
   deleteMessage: (messageId: string) => Promise<boolean>;
   clearConversation: (conversationId: string) => Promise<boolean>;
+  saveCallLog: (call: any) => Promise<boolean>;
+  saveCallLogs: (calls: any[]) => Promise<boolean>;
+  getCallLogs: (limit: number) => Promise<any[]>;
 }
 
 const nativeStorage: NativeConnectStorage | undefined = NativeModules?.ConnectStorage;
@@ -128,6 +131,29 @@ class MemoryFallbackStorage {
   async clearConversation(conversationId: string): Promise<boolean> {
     this.messages.delete(conversationId);
     return true;
+  }
+
+  private callLogs: ConnectCallLog[] = [];
+
+  async saveCallLog(call: ConnectCallLog): Promise<boolean> {
+    const idx = this.callLogs.findIndex((c) => c.id === call.id);
+    if (idx >= 0) {
+      this.callLogs[idx] = { ...call };
+    } else {
+      this.callLogs.unshift({ ...call });
+    }
+    return true;
+  }
+
+  async saveCallLogs(calls: ConnectCallLog[]): Promise<boolean> {
+    for (const c of calls) {
+      await this.saveCallLog(c);
+    }
+    return true;
+  }
+
+  async getCallLogs(limit = 50): Promise<ConnectCallLog[]> {
+    return this.callLogs.slice(0, limit);
   }
 }
 
@@ -265,6 +291,45 @@ class ConnectLocalStorage {
       }
     }
     await memoryFallback.clearConversation(conversationId);
+  }
+
+  async saveCallLog(call: ConnectCallLog): Promise<void> {
+    if (nativeStorage) {
+      try {
+        await nativeStorage.saveCallLog(call);
+        return;
+      } catch {
+        // Fallback below
+      }
+    }
+    await memoryFallback.saveCallLog(call);
+  }
+
+  async saveCallLogs(calls: ConnectCallLog[]): Promise<void> {
+    if (!calls || calls.length === 0) return;
+    if (nativeStorage) {
+      try {
+        await nativeStorage.saveCallLogs(calls);
+        return;
+      } catch {
+        // Fallback below
+      }
+    }
+    await memoryFallback.saveCallLogs(calls);
+  }
+
+  async getCallLogs(limit = 50): Promise<ConnectCallLog[]> {
+    if (nativeStorage) {
+      try {
+        const raw = await nativeStorage.getCallLogs(limit);
+        if (Array.isArray(raw)) {
+          return raw as ConnectCallLog[];
+        }
+      } catch {
+        // Fallback below
+      }
+    }
+    return await memoryFallback.getCallLogs(limit);
   }
 }
 

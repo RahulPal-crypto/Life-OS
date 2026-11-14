@@ -156,3 +156,55 @@ export function validateUploadMedia(body = {}) {
     },
   };
 }
+
+export function validateInitiateCall(body = {}) {
+  const errors = [];
+  const receiverId = typeof body.receiverId === 'string' ? body.receiverId.trim() : '';
+  const conversationId = typeof body.conversationId === 'string' ? body.conversationId.trim() : null;
+  const rawType = typeof body.callType === 'string' ? body.callType.toLowerCase().trim() : 'voice';
+  const callType = rawType === 'video' ? 'video' : 'voice';
+
+  if (!receiverId) {
+    errors.push('Receiver user ID is required.');
+  }
+
+  return {
+    isValid: errors.length === 0,
+    errors,
+    sanitized: {
+      receiverId,
+      conversationId,
+      callType,
+    },
+  };
+}
+
+export function validateRespondCall(body = {}) {
+  const errors = [];
+  const rawAction = typeof body.action === 'string' ? body.action.toLowerCase().trim() : '';
+  const action = ['accept', 'decline', 'busy'].includes(rawAction) ? rawAction : '';
+
+  if (!action) {
+    errors.push("Action must be 'accept', 'decline', or 'busy'.");
+  }
+
+  return {
+    isValid: errors.length === 0,
+    errors,
+    sanitized: { action },
+  };
+}
+
+export function validateEndCall(body = {}) {
+  const rawDuration = typeof body.durationSeconds === 'number' && Number.isFinite(body.durationSeconds)
+    ? Math.max(0, Math.round(body.durationSeconds))
+    : 0;
+
+  return {
+    isValid: true,
+    errors: [],
+    sanitized: {
+      durationSeconds: rawDuration,
+    },
+  };
+}

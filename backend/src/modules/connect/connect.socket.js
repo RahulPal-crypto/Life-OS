@@ -201,6 +201,50 @@ export function initConnectWebSocketServer(httpServer) {
           }
           return;
         }
+
+        // Voice & Video Calls Signaling (Phase 3)
+        if (event === 'call_initiate') {
+          const { receiverId, conversationId, callType } = data || {};
+          if (receiverId) {
+            const res = await ConnectService.initiateCall(userId, { receiverId, conversationId, callType });
+            ws.send(JSON.stringify({ event: 'call_initiated', data: res }));
+            broadcastToUsers([receiverId], 'incoming_call', res);
+          }
+          return;
+        }
+
+        if (event === 'call_respond') {
+          const { callId, action } = data || {};
+          if (callId && action) {
+            const res = await ConnectService.respondCall(userId, callId, { action });
+            broadcastToUsers([res.callerId], 'call_response', res);
+          }
+          return;
+        }
+
+        if (event === 'call_end') {
+          const { callId, durationSeconds } = data || {};
+          if (callId) {
+            const res = await ConnectService.endCall(userId, callId, { durationSeconds });
+            if (res.otherUserId) {
+              broadcastToUsers([res.otherUserId], 'call_ended', res);
+            }
+            ws.send(JSON.stringify({ event: 'call_ended', data: res }));
+          }
+          return;
+        }
+
+        if (event === 'call_signal') {
+          const { targetUserId, callId, signal } = data || {};
+          if (targetUserId && signal) {
+            broadcastToUsers([targetUserId], 'call_signal', {
+              fromUserId: userId,
+              callId,
+              signal,
+            });
+          }
+          return;
+        }
       } catch (err) {
         ws.send(
           JSON.stringify({

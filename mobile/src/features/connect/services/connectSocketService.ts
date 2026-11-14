@@ -6,6 +6,10 @@ type MessageCallback = (message: ConnectMessage) => void;
 type TypingCallback = (payload: { conversationId: string; userId: string; isTyping: boolean }) => void;
 type ReadReceiptCallback = (payload: { conversationId: string; readByUserId: string }) => void;
 type DeliveryReceiptCallback = (payload: { conversationId: string; messageId: string }) => void;
+type IncomingCallCallback = (callData: any) => void;
+type CallResponseCallback = (responseData: any) => void;
+type CallEndedCallback = (endData: any) => void;
+type CallSignalCallback = (signalData: any) => void;
 
 class ConnectSocketService {
   private ws: WebSocket | null = null;
@@ -14,6 +18,10 @@ class ConnectSocketService {
   private typingListeners: Set<TypingCallback> = new Set();
   private readListeners: Set<ReadReceiptCallback> = new Set();
   private deliveryListeners: Set<DeliveryReceiptCallback> = new Set();
+  private incomingCallListeners: Set<IncomingCallCallback> = new Set();
+  private callResponseListeners: Set<CallResponseCallback> = new Set();
+  private callEndedListeners: Set<CallEndedCallback> = new Set();
+  private callSignalListeners: Set<CallSignalCallback> = new Set();
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   private isExplicitDisconnect = false;
@@ -62,6 +70,14 @@ class ConnectSocketService {
             this.readListeners.forEach((cb) => cb(data));
           } else if (evType === 'message_delivered') {
             this.deliveryListeners.forEach((cb) => cb(data));
+          } else if (evType === 'incoming_call') {
+            this.incomingCallListeners.forEach((cb) => cb(data));
+          } else if (evType === 'call_response') {
+            this.callResponseListeners.forEach((cb) => cb(data));
+          } else if (evType === 'call_ended') {
+            this.callEndedListeners.forEach((cb) => cb(data));
+          } else if (evType === 'call_signal') {
+            this.callSignalListeners.forEach((cb) => cb(data));
           }
         } catch {
           // Ignore malformed frames
@@ -228,6 +244,83 @@ class ConnectSocketService {
   onDeliveryReceipt(cb: DeliveryReceiptCallback): () => void {
     this.deliveryListeners.add(cb);
     return () => this.deliveryListeners.delete(cb);
+  }
+
+  // Voice & Video Calls Signaling (Phase 3)
+  emitCallInitiate(receiverId: string, conversationId: string | null, callType: 'voice' | 'video'): void {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+    try {
+      this.ws.send(
+        JSON.stringify({
+          event: 'call_initiate',
+          data: { receiverId, conversationId, callType },
+        })
+      );
+    } catch {
+      // Ignore
+    }
+  }
+
+  emitCallRespond(callId: string, action: 'accept' | 'decline' | 'busy'): void {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+    try {
+      this.ws.send(
+        JSON.stringify({
+          event: 'call_respond',
+          data: { callId, action },
+        })
+      );
+    } catch {
+      // Ignore
+    }
+  }
+
+  emitCallEnd(callId: string, durationSeconds = 0): void {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+    try {
+      this.ws.send(
+        JSON.stringify({
+          event: 'call_end',
+          data: { callId, durationSeconds },
+        })
+      );
+    } catch {
+      // Ignore
+    }
+  }
+
+  emitCallSignal(targetUserId: string, callId: string, signal: any): void {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+    try {
+      this.ws.send(
+        JSON.stringify({
+          event: 'call_signal',
+          data: { targetUserId, callId, signal },
+        })
+      );
+    } catch {
+      // Ignore
+    }
+  }
+
+  onIncomingCall(cb: IncomingCallCallback): () => void {
+    this.incomingCallListeners.add(cb);
+    return () => this.incomingCallListeners.delete(cb);
+  }
+
+  onCallResponse(cb: CallResponseCallback): () => void {
+    this.callResponseListeners.add(cb);
+    return () => this.callResponseListeners.delete(cb);
+  }
+
+  onCallEnded(cb: CallEndedCallback): () => void {
+    this.callEndedListeners.add(cb);
+    return () => this.callEndedListeners.delete(cb);
+  }
+
+  onCallSignal(cb: CallSignalCallback): () => void {
+    this.callSignalListeners.add(cb);
+    return () => this.callSignalListeners.delete(cb);
   }
 }
 

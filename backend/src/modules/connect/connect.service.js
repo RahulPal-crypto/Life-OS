@@ -862,4 +862,236 @@ export class ConnectService {
       messageId,
     };
   }
+
+  // ==========================================
+  // 5. VOICE & VIDEO CALLS (PHASE 3)
+  // ==========================================
+
+  static async initiateCall(callerId, payload) {
+    const { receiverId, conversationId, callType = 'voice' } = payload;
+
+    if (callerId === receiverId) {
+      throw createServiceError('Cannot call yourself.', 400, 'SELF_CALL_NOT_ALLOWED');
+    }
+
+    const [receiver] = await query(
+      'SELECT id, name, profile_image, headline, phone FROM users WHERE id = ? LIMIT 1',
+      [receiverId]
+    );
+    if (!receiver) {
+      throw createServiceError('Receiver not found.', 404, 'USER_NOT_FOUND');
+    }
+
+    const [caller] = await query(
+      'SELECT id, name, profile_image, headline, phone FROM users WHERE id = ? LIMIT 1',
+      [callerId]
+    );
+
+    let activeConvId = conversationId;
+    if (!activeConvId) {
+      const conv = await this.getOrCreateDirectConversation(callerId, receiverId);
+      activeConvId = conv.id;
+    }
+
+    const callId = crypto.randomUUID();
+
+    await query(
+      `INSERT INTO connect_calls (
+         id, caller_id, receiver_id, conversation_id, call_type, status, started_at
+       ) VALUES (?, ?, ?, ?, ?, 'ringing', NOW())`,
+      [callId, callerId, receiverId, activeConvId, callType]
+    );
+
+    return {
+      callId,
+      conversationId: activeConvId,
+      callType,
+      status: 'ringing',
+      caller: {
+        id: caller.id,
+        name: caller.name,
+        profileImage: caller.profile_image,
+        headline: caller.headline,
+      },
+      receiver: {
+        id: receiver.id,
+        name: receiver.name,
+        profileImage: receiver.profile_image,
+        headline: receiver.headline,
+      },
+      startedAt: new Date().toISOString(),
+    };
+  }
+
+  static async respondCall(receiverId, callId, { action }) {
+    const [call] = await query(
+      'SELECT * FROM connect_calls WHERE id = ? AND receiver_id = ? LIMIT 1',
+      [callId, receiverId]
+    );
+    if (!call) {
+      throw createServiceError('Call not found or you are not the receiver.', 404, 'CALL_NOT_FOUND');
+    }
+
+    const nextStatus = action === 'accept' ? 'ongoing' : action === 'busy' ? 'busy' : 'declined';
+    const endedAtSql = action === 'accept' ? 'NULL' : 'NOW()';
+
+    await query(
+      `UPDATE connect_calls
+       SET status = ?, ended_at = ${endedAtSql}
+       WHERE id = ?`,
+      [nextStatus, callId]
+    );
+
+    // If declined or busy, record call note in conversation
+    if (action !== 'accept' && call.conversation_id) {
+      const sysMsgId = crypto.randomUUID();
+      const text = call.call_type === 'video' ? '🎥 Declined video call' : '📞 Declined voice call';
+      await query(
+        `INSERT INTO connect_messages (
+           id, conversation_id, sender_id, message_type, content, status
+         ) VALUES (?, ?, ?, 'system', ?, 'read')`,
+        [sysMsgId, call.conversation_id, receiverId, text]
+      );
+      await query(
+        `UPDATE connect_conversations
+         SET last_message_text = ?, last_message_sender_id = ?, last_message_at = NOW()
+         WHERE id = ?`,
+        [text, receiverId, call.conversation_id]
+      );
+    }
+
+    return {
+      callId,
+      callerId: call.caller_id,
+      receiverId: call.receiver_id,
+      conversationId: call.conversation_id,
+      callType: call.call_type,
+      status: nextStatus,
+    };
+  }
+
+  static async endCall(userId, callId, { durationSeconds = 0 }) {
+    const [call] = await query(
+      'SELECT * FROM connect_calls WHERE id = ? AND (caller_id = ? OR receiver_id = ?) LIMIT 1',
+      [callId, userId, userId]
+    );
+    if (!call) {
+      throw createServiceError('Call not found or unauthorized.', 404, 'CALL_NOT_FOUND');
+    }
+
+    const isCaller = call.caller_id === userId;
+    const otherUserId = isCaller ? call.receiver_id : call.caller_id;
+    const finalDuration = Math.max(0, Number(durationSeconds) || 0);
+
+    let finalStatus = 'completed';
+    if (call.status === 'ringing') {
+      finalStatus = isCaller ? 'missed' : 'declined';
+    } else if (finalDuration === 0 && call.status !== 'ongoing') {
+      finalStatus = 'missed';
+    }
+
+    await query(
+      `UPDATE connect_calls
+       SET status = ?, ended_at = NOW(), duration_seconds = ?
+       WHERE id = ?`,
+      [finalStatus, finalDuration, callId]
+    );
+
+    // Add WhatsApp-style call summary into the conversation messages
+    if (call.conversation_id) {
+      let msgText = '';
+      const icon = call.call_type === 'video' ? '🎥' : '📞';
+      const callName = call.call_type === 'video' ? 'Video call' : 'Voice call';
+
+      if (finalStatus === 'missed') {
+        msgText = `${icon} Missed ${callName.toLowerCase()}`;
+      } else if (finalStatus === 'declined') {
+        msgText = `${icon} Declined ${callName.toLowerCase()}`;
+      } else {
+        const mins = Math.floor(finalDuration / 60);
+        const secs = finalDuration % 60;
+        const durStr = mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
+        msgText = `${icon} ${callName}, ${durStr}`;
+      }
+
+      const callMsgId = crypto.randomUUID();
+      await query(
+        `INSERT INTO connect_messages (
+           id, conversation_id, sender_id, message_type, content, status
+         ) VALUES (?, ?, ?, 'system', ?, 'read')`,
+        [callMsgId, call.conversation_id, call.caller_id, msgText]
+      );
+
+      await query(
+        `UPDATE connect_conversations
+         SET last_message_text = ?, last_message_sender_id = ?, last_message_at = NOW()
+         WHERE id = ?`,
+        [msgText, call.caller_id, call.conversation_id]
+      );
+    }
+
+    return {
+      callId,
+      callerId: call.caller_id,
+      receiverId: call.receiver_id,
+      otherUserId,
+      conversationId: call.conversation_id,
+      callType: call.call_type,
+      status: finalStatus,
+      durationSeconds: finalDuration,
+    };
+  }
+
+  static async getCallHistory(userId, options = {}) {
+    const parsedLimit = Number.isInteger(options.limit)
+      ? options.limit
+      : Number.parseInt(options.limit, 10) || 50;
+    const safeLimit = Math.min(Math.max(parsedLimit, 1), 100);
+
+    const rows = await query(
+      `SELECT
+         c.id,
+         c.caller_id,
+         c.receiver_id,
+         c.conversation_id,
+         c.call_type,
+         c.status,
+         c.started_at,
+         c.ended_at,
+         c.duration_seconds,
+         c.created_at,
+         u1.name AS caller_name,
+         u1.profile_image AS caller_avatar,
+         u1.phone AS caller_phone,
+         u2.name AS receiver_name,
+         u2.profile_image AS receiver_avatar,
+         u2.phone AS receiver_phone
+       FROM connect_calls c
+       JOIN users u1 ON u1.id = c.caller_id
+       JOIN users u2 ON u2.id = c.receiver_id
+       WHERE c.caller_id = ? OR c.receiver_id = ?
+       ORDER BY c.created_at DESC
+       LIMIT ${safeLimit}`,
+      [userId, userId]
+    );
+
+    return rows.map((r) => {
+      const isOutgoing = r.caller_id === userId;
+      return {
+        id: r.id,
+        conversationId: r.conversation_id,
+        callType: r.call_type,
+        status: r.status,
+        startedAt: r.started_at,
+        endedAt: r.ended_at,
+        durationSeconds: r.duration_seconds || 0,
+        createdAt: r.created_at,
+        isOutgoing,
+        contactUserId: isOutgoing ? r.receiver_id : r.caller_id,
+        contactName: isOutgoing ? r.receiver_name : r.caller_name,
+        contactAvatar: isOutgoing ? r.receiver_avatar : r.caller_avatar,
+        contactPhone: isOutgoing ? r.receiver_phone : r.caller_phone,
+      };
+    });
+  }
 }

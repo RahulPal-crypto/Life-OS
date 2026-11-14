@@ -7,6 +7,9 @@ import {
   validateCreateConversation,
   validateSendMessage,
   validateUploadMedia,
+  validateInitiateCall,
+  validateRespondCall,
+  validateEndCall,
 } from '../src/modules/connect/connect.validator.js';
 
 describe('Connect Validators', () => {
@@ -106,5 +109,50 @@ describe('Connect Validators', () => {
     });
     assert.equal(invalidUpload.isValid, false);
     assert.equal(invalidUpload.errors.length >= 2, true);
+  });
+
+  it('validates Phase 3 call payloads (initiate, respond, end)', () => {
+    // Initiate Call
+    const validCall = validateInitiateCall({
+      receiverId: 'usr_rec_456',
+      conversationId: 'conv_123',
+      callType: 'video',
+    });
+    assert.equal(validCall.isValid, true);
+    assert.equal(validCall.sanitized.receiverId, 'usr_rec_456');
+    assert.equal(validCall.sanitized.conversationId, 'conv_123');
+    assert.equal(validCall.sanitized.callType, 'video');
+
+    const defaultVoiceCall = validateInitiateCall({
+      receiverId: 'usr_rec_789',
+    });
+    assert.equal(defaultVoiceCall.isValid, true);
+    assert.equal(defaultVoiceCall.sanitized.callType, 'voice');
+    assert.equal(defaultVoiceCall.sanitized.conversationId, null);
+
+    const invalidCall = validateInitiateCall({});
+    assert.equal(invalidCall.isValid, false);
+    assert.equal(invalidCall.errors.length > 0, true);
+
+    // Respond Call
+    const acceptResp = validateRespondCall({ action: 'accept' });
+    assert.equal(acceptResp.isValid, true);
+    assert.equal(acceptResp.sanitized.action, 'accept');
+
+    const declineResp = validateRespondCall({ action: 'DECLINE' });
+    assert.equal(declineResp.isValid, true);
+    assert.equal(declineResp.sanitized.action, 'decline');
+
+    const invalidResp = validateRespondCall({ action: 'invalid_action' });
+    assert.equal(invalidResp.isValid, false);
+
+    // End Call
+    const endCallValid = validateEndCall({ durationSeconds: 45.7 });
+    assert.equal(endCallValid.isValid, true);
+    assert.equal(endCallValid.sanitized.durationSeconds, 46);
+
+    const endCallDefault = validateEndCall({});
+    assert.equal(endCallDefault.isValid, true);
+    assert.equal(endCallDefault.sanitized.durationSeconds, 0);
   });
 });

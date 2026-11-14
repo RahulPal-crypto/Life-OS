@@ -6,6 +6,9 @@ import {
   validateCreateConversation,
   validateSendMessage,
   validateUploadMedia,
+  validateInitiateCall,
+  validateRespondCall,
+  validateEndCall,
 } from './connect.validator.js';
 import { broadcastToUsers, isUserOnline } from './connect.socket.js';
 import { sendSuccess, sendCreated, sendError } from '../../utils/apiResponse.js';
@@ -239,6 +242,83 @@ export class ConnectController {
       });
 
       return sendSuccess(res, 'Conversation marked as read.', { conversationId });
+    } catch (err) {
+      if (err.statusCode) {
+        return sendError(res, err.message, err.statusCode, err.code);
+      }
+      next(err);
+    }
+  }
+
+  // 5. Calls (Phase 3)
+  static async initiateCall(req, res, next) {
+    try {
+      const validation = validateInitiateCall(req.body);
+      if (!validation.isValid) {
+        return sendError(res, 'Validation failed.', 400, 'VALIDATION_FAILED', validation.errors);
+      }
+
+      const result = await ConnectService.initiateCall(req.user.id, validation.sanitized);
+
+      // Signal incoming call to receiver via WebSocket
+      broadcastToUsers([result.receiver.id], 'incoming_call', result);
+
+      return sendCreated(res, 'Call initiated.', result);
+    } catch (err) {
+      if (err.statusCode) {
+        return sendError(res, err.message, err.statusCode, err.code);
+      }
+      next(err);
+    }
+  }
+
+  static async respondCall(req, res, next) {
+    try {
+      const { id: callId } = req.params;
+      const validation = validateRespondCall(req.body);
+      if (!validation.isValid) {
+        return sendError(res, 'Validation failed.', 400, 'VALIDATION_FAILED', validation.errors);
+      }
+
+      const result = await ConnectService.respondCall(req.user.id, callId, validation.sanitized);
+
+      // Signal response to caller via WebSocket
+      broadcastToUsers([result.callerId], 'call_response', result);
+
+      return sendSuccess(res, 'Call response recorded.', result);
+    } catch (err) {
+      if (err.statusCode) {
+        return sendError(res, err.message, err.statusCode, err.code);
+      }
+      next(err);
+    }
+  }
+
+  static async endCall(req, res, next) {
+    try {
+      const { id: callId } = req.params;
+      const validation = validateEndCall(req.body);
+      const result = await ConnectService.endCall(req.user.id, callId, validation.sanitized);
+
+      // Signal call end to other party via WebSocket
+      if (result.otherUserId) {
+        broadcastToUsers([result.otherUserId], 'call_ended', result);
+      }
+
+      return sendSuccess(res, 'Call ended.', result);
+    } catch (err) {
+      if (err.statusCode) {
+        return sendError(res, err.message, err.statusCode, err.code);
+      }
+      next(err);
+    }
+  }
+
+  static async getCallHistory(req, res, next) {
+    try {
+      const { limit } = req.query;
+      const calls = await ConnectService.getCallHistory(req.user.id, { limit });
+      return sendSuccess(res, 'Call history loaded.', calls);
     } catch (err) {
       if (err.statusCode) {
         return sendError(res, err.message, err.statusCode, err.code);

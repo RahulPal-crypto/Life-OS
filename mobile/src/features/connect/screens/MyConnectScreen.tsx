@@ -19,6 +19,9 @@ import {
   ConnectOtherContact,
   ConnectSecurityStatus,
   ConnectUserContact,
+  ConnectActiveCall,
+  ConnectCallLog,
+  ConnectMainTab,
 } from '../types';
 import { connectService } from '../services/connectService';
 import { connectSocketService } from '../services/connectSocketService';
@@ -27,6 +30,8 @@ import { connectLocalStorage } from '../services/connectLocalStorage';
 import { ConnectSecurityModal } from '../components/ConnectSecurityModal';
 import { NewChatModal } from '../components/NewChatModal';
 import { CreateGroupModal } from '../components/CreateGroupModal';
+import { IncomingCallModal } from '../components/IncomingCallModal';
+import { ActiveCallModal } from '../components/ActiveCallModal';
 import { ConnectConversationScreen } from './ConnectConversationScreen';
 
 interface MyConnectScreenProps {
@@ -65,6 +70,12 @@ export const MyConnectScreen: React.FC<MyConnectScreenProps> = ({
   const [refreshing, setRefreshing] = useState(false);
   const [contactsLoading, setContactsLoading] = useState(false);
 
+  // Tab State: Chats vs Calls (Phase 3)
+  const [mainTab, setMainTab] = useState<ConnectMainTab>('chats');
+  const [callLogs, setCallLogs] = useState<ConnectCallLog[]>([]);
+  const [activeCall, setActiveCall] = useState<ConnectActiveCall | null>(null);
+  const [incomingCall, setIncomingCall] = useState<ConnectActiveCall | null>(null);
+
   // Active Chat & Sub-Modals
   const [activeConversation, setActiveConversation] = useState<ConnectConversation | null>(null);
   const [newChatVisible, setNewChatVisible] = useState(false);
@@ -87,7 +98,7 @@ export const MyConnectScreen: React.FC<MyConnectScreenProps> = ({
       });
   }, []);
 
-  // 2. Load conversations (Local phone database first, then background cloud sync)
+  // 2. Load conversations and call history (Local phone database first, then background cloud sync)
   const loadData = useCallback(async (silent = false) => {
     try {
       if (!silent) setLoading(true);
@@ -96,15 +107,31 @@ export const MyConnectScreen: React.FC<MyConnectScreenProps> = ({
       const localList = await connectLocalStorage.getConversations();
       if (localList && localList.length > 0) {
         setConversations(localList);
-        if (!silent) setLoading(false);
+      }
+      const localLogs = await connectLocalStorage.getCallLogs();
+      if (localLogs && localLogs.length > 0) {
+        setCallLogs(localLogs);
+      }
+      if (!silent && (localList.length > 0 || localLogs.length > 0)) {
+        setLoading(false);
       }
 
       // Background Cloud Sync: fetch latest from server relay
-      const list = await connectService.getConversations();
-      setConversations(list);
-      await connectLocalStorage.saveConversations(list);
+      const [list, serverLogs] = await Promise.allSettled([
+        connectService.getConversations(),
+        connectService.getCallHistory(),
+      ]);
+
+      if (list.status === 'fulfilled') {
+        setConversations(list.value);
+        await connectLocalStorage.saveConversations(list.value);
+      }
+      if (serverLogs.status === 'fulfilled') {
+        setCallLogs(serverLogs.value);
+        await connectLocalStorage.saveCallLogs(serverLogs.value);
+      }
     } catch {
-      // If offline, silently use local conversations without error popups
+      // If offline, silently use local storage without error popups
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -133,8 +160,41 @@ export const MyConnectScreen: React.FC<MyConnectScreenProps> = ({
       }
     });
 
+    // Real-time call signaling listeners (Phase 3)
+    const unsubIncoming = connectSocketService.onIncomingCall((data) => {
+      setIncomingCall({
+        callId: data.callId,
+        conversationId: data.conversationId,
+        callType: data.callType,
+        status: 'ringing',
+        caller: data.caller,
+        receiver: data.receiver,
+        isOutgoing: false,
+        durationSeconds: 0,
+      });
+    });
+
+    const unsubCallResp = connectSocketService.onCallResponse((resp) => {
+      if (resp.status === 'ongoing') {
+        setActiveCall((prev) => (prev ? { ...prev, status: 'ongoing' } : null));
+      } else {
+        Alert.alert('Call', `Call was ${resp.status}`);
+        setActiveCall(null);
+        loadData(true);
+      }
+    });
+
+    const unsubCallEnded = connectSocketService.onCallEnded(() => {
+      setActiveCall(null);
+      setIncomingCall(null);
+      loadData(true);
+    });
+
     return () => {
       unsubMsg();
+      unsubIncoming();
+      unsubCallResp();
+      unsubCallEnded();
     };
   }, [isUnlocked, loadData]);
 
@@ -222,6 +282,102 @@ export const MyConnectScreen: React.FC<MyConnectScreenProps> = ({
     loadData(true);
   };
 
+  // Phase 3 Call Handlers
+  const handleStartCall = async (
+    callType: 'voice' | 'video',
+    partner: { id: string; name: string; profileImage: string | null; headline?: string | null }
+  ) => {
+    try {
+      const res = await connectService.initiateCall({
+        receiverId: partner.id,
+        conversationId: activeConversation?.id || null,
+        callType,
+      });
+
+      connectSocketService.emitCallInitiate(partner.id, activeConversation?.id || null, callType);
+
+      setActiveCall({
+        callId: res.callId,
+        conversationId: res.conversationId,
+        callType,
+        status: 'ringing',
+        caller: {
+          id: user?.id || '',
+          name: user?.name || 'You',
+          profileImage: user?.profileImage || null,
+        },
+        receiver: {
+          id: partner.id,
+          name: partner.name,
+          profileImage: partner.profileImage,
+          headline: partner.headline,
+        },
+        isOutgoing: true,
+        durationSeconds: 0,
+      });
+    } catch (err: any) {
+      Alert.alert('Call Failed', err?.message || 'Could not place call.');
+    }
+  };
+
+  const handleAcceptIncomingCall = async () => {
+    if (!incomingCall) return;
+    try {
+      await connectService.respondCall(incomingCall.callId, 'accept');
+      connectSocketService.emitCallRespond(incomingCall.callId, 'accept');
+      setActiveCall({ ...incomingCall, status: 'ongoing' });
+      setIncomingCall(null);
+    } catch (err: any) {
+      Alert.alert('Call Error', err?.message || 'Could not connect call.');
+      setIncomingCall(null);
+    }
+  };
+
+  const handleDeclineIncomingCall = async () => {
+    if (!incomingCall) return;
+    try {
+      await connectService.respondCall(incomingCall.callId, 'decline');
+      connectSocketService.emitCallRespond(incomingCall.callId, 'decline');
+    } catch {
+      // Ignore
+    } finally {
+      setIncomingCall(null);
+      loadData(true);
+    }
+  };
+
+  const handleEndActiveCall = async (durationSecs: number) => {
+    if (!activeCall) return;
+    const callToLog = { ...activeCall };
+    setActiveCall(null);
+    try {
+      await connectService.endCall(callToLog.callId, durationSecs);
+      connectSocketService.emitCallEnd(callToLog.callId, durationSecs);
+
+      const partner = callToLog.isOutgoing ? callToLog.receiver : callToLog.caller;
+      const log: ConnectCallLog = {
+        id: callToLog.callId,
+        conversationId: callToLog.conversationId,
+        callType: callToLog.callType,
+        status: durationSecs > 0 ? 'completed' : 'missed',
+        startedAt: new Date(Date.now() - durationSecs * 1000).toISOString(),
+        endedAt: new Date().toISOString(),
+        durationSeconds: durationSecs,
+        createdAt: new Date().toISOString(),
+        isOutgoing: callToLog.isOutgoing,
+        contactUserId: partner.id,
+        contactName: partner.name,
+        contactAvatar: partner.profileImage,
+        contactPhone: null,
+      };
+      await connectLocalStorage.saveCallLog(log);
+    } catch {
+      // Ignore
+    } finally {
+      loadData(true);
+    }
+  };
+
   // Filter conversations
   const filteredConversations = conversations.filter((c) => {
     if (activeFilter === 'unread' && c.unreadCount === 0) return false;
@@ -242,14 +398,29 @@ export const MyConnectScreen: React.FC<MyConnectScreenProps> = ({
   // If a conversation is active, show the WhatsApp-like Chat screen
   if (activeConversation) {
     return (
-      <ConnectConversationScreen
-        conversation={activeConversation}
-        currentUserId={user?.id || ''}
-        onBack={() => {
-          setActiveConversation(null);
-          loadData(true);
-        }}
-      />
+      <>
+        <ConnectConversationScreen
+          conversation={activeConversation}
+          currentUserId={user?.id || ''}
+          onBack={() => {
+            setActiveConversation(null);
+            loadData(true);
+          }}
+          onStartCall={handleStartCall}
+        />
+        <IncomingCallModal
+          call={incomingCall}
+          onAccept={handleAcceptIncomingCall}
+          onDecline={handleDeclineIncomingCall}
+        />
+        <ActiveCallModal
+          call={activeCall}
+          onEndCall={handleEndActiveCall}
+          onToggleCallType={(newType) => {
+            if (activeCall) setActiveCall({ ...activeCall, callType: newType });
+          }}
+        />
+      </>
     );
   }
 
@@ -302,6 +473,43 @@ export const MyConnectScreen: React.FC<MyConnectScreenProps> = ({
           </View>
         </View>
 
+        {/* WhatsApp Top Navigation Tabs: CHATS and CALLS */}
+        <View style={styles.mainTabsBar}>
+          <Pressable
+            onPress={() => setMainTab('chats')}
+            style={[styles.mainTabBtn, mainTab === 'chats' && styles.mainTabBtnActive]}
+          >
+            <Text
+              style={[styles.mainTabText, mainTab === 'chats' && styles.mainTabTextActive]}
+            >
+              CHATS
+            </Text>
+            {totalUnread > 0 && (
+              <View style={styles.tabBadge}>
+                <Text style={styles.tabBadgeText}>{totalUnread}</Text>
+              </View>
+            )}
+          </Pressable>
+
+          <Pressable
+            onPress={() => setMainTab('calls')}
+            style={[styles.mainTabBtn, mainTab === 'calls' && styles.mainTabBtnActive]}
+          >
+            <Text
+              style={[styles.mainTabText, mainTab === 'calls' && styles.mainTabTextActive]}
+            >
+              CALLS
+            </Text>
+            {callLogs.filter((c) => c.status === 'missed').length > 0 && (
+              <View style={[styles.tabBadge, { backgroundColor: '#EF4444' }]}>
+                <Text style={styles.tabBadgeText}>
+                  {callLogs.filter((c) => c.status === 'missed').length}
+                </Text>
+              </View>
+            )}
+          </Pressable>
+        </View>
+
         {/* Collapsible Search Input */}
         {isSearchActive && (
           <View style={styles.searchBarRow}>
@@ -321,28 +529,30 @@ export const MyConnectScreen: React.FC<MyConnectScreenProps> = ({
           </View>
         )}
 
-        {/* Quick Filter Tabs (All, Unread, Groups, Favorites) */}
-        <View style={styles.filterTabsRow}>
-          {FILTER_TABS.map((tab) => {
-            const active = activeFilter === tab.key;
-            return (
-              <Pressable
-                key={tab.key}
-                onPress={() => setActiveFilter(tab.key)}
-                style={[styles.filterTab, active && styles.filterTabActive]}
-              >
-                <Text
-                  variant="caption"
-                  color={active ? '#FFFFFF' : '#475569'}
-                  style={styles.filterTabText}
+        {/* Quick Filter Tabs (All, Unread, Groups, Favorites) - in Chats view */}
+        {mainTab === 'chats' && (
+          <View style={styles.filterTabsRow}>
+            {FILTER_TABS.map((tab) => {
+              const active = activeFilter === tab.key;
+              return (
+                <Pressable
+                  key={tab.key}
+                  onPress={() => setActiveFilter(tab.key)}
+                  style={[styles.filterTab, active && styles.filterTabActive]}
                 >
-                  {tab.label}
-                  {tab.key === 'unread' && totalUnread > 0 ? ` (${totalUnread})` : ''}
-                </Text>
-              </Pressable>
-            );
-          })}
-        </View>
+                  <Text
+                    variant="caption"
+                    color={active ? '#FFFFFF' : '#475569'}
+                    style={styles.filterTabText}
+                  >
+                    {tab.label}
+                    {tab.key === 'unread' && totalUnread > 0 ? ` (${totalUnread})` : ''}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </View>
+        )}
 
         <ScrollView
           contentContainerStyle={styles.scrollContent}
@@ -356,26 +566,117 @@ export const MyConnectScreen: React.FC<MyConnectScreenProps> = ({
             />
           }
         >
-          {/* Stories / Moments Tray (Phase 4 Ready) */}
-          <View style={styles.storiesSection}>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.storiesRow}>
-              {/* My Status Bubble */}
-              <Pressable
-                onPress={() =>
-                  Alert.alert(
-                    'My Status',
-                    'Post 24-hour disappearing photos, stories & moments arriving in Phase 4!'
-                  )
-                }
-                style={styles.storyItem}
-              >
-                <View style={styles.myStatusRing}>
-                  <Text style={styles.myStatusPlus}>+</Text>
+          {mainTab === 'calls' ? (
+            /* Calls Tab: Call History (Phase 3) */
+            <View style={styles.callsSection}>
+              {callLogs.length === 0 ? (
+                <View style={styles.emptyContainer}>
+                  <Text style={styles.emptyIcon}>📞</Text>
+                  <Text variant="body" color="#0F172A" align="center" style={styles.emptyTitle}>
+                    No call history yet
+                  </Text>
+                  <Text variant="caption" color="#64748B" align="center" style={styles.emptySub}>
+                    Tap the call button below to start a HD voice or video call with your contacts
+                  </Text>
                 </View>
-                <Text variant="caption" color="#0F172A" style={styles.storyName}>
-                  My Status
-                </Text>
-              </Pressable>
+              ) : (
+                <View style={styles.convList}>
+                  {callLogs.map((log) => {
+                    const isMissed = log.status === 'missed' || log.status === 'declined';
+                    const timeStr = new Date(log.createdAt).toLocaleDateString([], {
+                      month: 'short',
+                      day: 'numeric',
+                      hour: '2-digit',
+                      minute: '2-digit',
+                    });
+                    const mins = Math.floor(log.durationSeconds / 60);
+                    const secs = log.durationSeconds % 60;
+                    const durStr = log.durationSeconds > 0 ? (mins > 0 ? `${mins}m ${secs}s` : `${secs}s`) : '';
+
+                    return (
+                      <View key={log.id} style={styles.convRow}>
+                        <View style={styles.convAvatar}>
+                          {log.contactAvatar ? (
+                            <Image source={{ uri: log.contactAvatar }} style={styles.avatarImg} />
+                          ) : (
+                            <Text style={styles.avatarLetter}>
+                              {log.contactName.slice(0, 1).toUpperCase()}
+                            </Text>
+                          )}
+                        </View>
+
+                        <View style={styles.convBody}>
+                          <View style={styles.convTopRow}>
+                            <Text
+                              variant="caption"
+                              color={isMissed ? '#EF4444' : '#0F172A'}
+                              numberOfLines={1}
+                              style={styles.convName}
+                            >
+                              {log.contactName}
+                            </Text>
+                          </View>
+
+                          <View style={styles.callMetaRow}>
+                            <Text
+                              style={[
+                                styles.callDirArrow,
+                                isMissed ? styles.arrowMissed : log.isOutgoing ? styles.arrowOut : styles.arrowIn,
+                              ]}
+                            >
+                              {isMissed ? '↙' : log.isOutgoing ? '↗' : '↙'}
+                            </Text>
+                            <Text variant="caption" color="#64748B" style={styles.callMetaText}>
+                              {timeStr} {durStr ? `• ${durStr}` : ''}
+                            </Text>
+                          </View>
+                        </View>
+
+                        {/* Quick Callback Icon Button */}
+                        <Pressable
+                          onPress={() =>
+                            handleStartCall(log.callType, {
+                              id: log.contactUserId,
+                              name: log.contactName,
+                              profileImage: log.contactAvatar,
+                            })
+                          }
+                          style={styles.callbackBtn}
+                          hitSlop={8}
+                        >
+                          <Text style={styles.callbackIcon}>
+                            {log.callType === 'video' ? '🎥' : '📞'}
+                          </Text>
+                        </Pressable>
+                      </View>
+                    );
+                  })}
+                </View>
+              )}
+            </View>
+          ) : (
+            /* Chats Tab: Stories & Conversations */
+            <>
+              {/* Stories / Moments Tray (Phase 4 Ready) */}
+              <View style={styles.storiesSection}>
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.storiesRow}>
+                  {/* My Status Bubble */}
+                  <Pressable
+                    onPress={() =>
+                      Alert.alert(
+                        'My Status',
+                        'Post 24-hour disappearing photos, stories & moments arriving in Phase 4!'
+                      )
+                    }
+                    style={styles.storyItem}
+                  >
+                    <View style={styles.myStatusRing}>
+                      <Text style={styles.myStatusPlus}>+</Text>
+                    </View>
+                    <Text variant="caption" color="#0F172A" style={styles.storyName}>
+                      My Status
+                    </Text>
+                  </Pressable>
 
               {/* Sample / Contact Moments circles */}
               {registeredContacts.slice(0, 5).map((c) => (
@@ -496,11 +797,13 @@ export const MyConnectScreen: React.FC<MyConnectScreenProps> = ({
               })
             )}
           </View>
+            </>
+          )}
         </ScrollView>
 
-        {/* WhatsApp-Style Floating Action Button (FAB) for New Chat */}
+        {/* WhatsApp-Style Floating Action Button (FAB) */}
         <Pressable onPress={handleOpenNewChatModal} style={styles.fab}>
-          <Text style={styles.fabIcon}>💬</Text>
+          <Text style={styles.fabIcon}>{mainTab === 'calls' ? '📞' : '💬'}</Text>
         </Pressable>
 
         {/* Security Unlock Modal */}
@@ -535,6 +838,20 @@ export const MyConnectScreen: React.FC<MyConnectScreenProps> = ({
           onClose={() => setCreateGroupVisible(false)}
           availableUsers={registeredContacts}
           onCreateGroup={handleCreateGroup}
+        />
+
+        {/* Incoming & Active Call Modals for Main Screen (Phase 3) */}
+        <IncomingCallModal
+          call={incomingCall}
+          onAccept={handleAcceptIncomingCall}
+          onDecline={handleDeclineIncomingCall}
+        />
+        <ActiveCallModal
+          call={activeCall}
+          onEndCall={handleEndActiveCall}
+          onToggleCallType={(newType) => {
+            if (activeCall) setActiveCall({ ...activeCall, callType: newType });
+          }}
         />
       </View>
     </ScreenContainer>
@@ -845,5 +1162,120 @@ const styles = StyleSheet.create({
   fabIcon: {
     fontSize: 24,
     color: '#FFFFFF',
+  },
+  mainTabsBar: {
+    flexDirection: 'row',
+    backgroundColor: '#FFFFFF',
+    borderBottomWidth: 1,
+    borderBottomColor: '#E2E8F0',
+  },
+  mainTabBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 12,
+    borderBottomWidth: 3,
+    borderBottomColor: 'transparent',
+    gap: 6,
+  },
+  mainTabBtnActive: {
+    borderBottomColor: '#7C3AED',
+  },
+  mainTabText: {
+    fontSize: 13.5,
+    fontWeight: '700',
+    color: '#64748B',
+    letterSpacing: 0.5,
+  },
+  mainTabTextActive: {
+    color: '#7C3AED',
+    fontWeight: '800',
+  },
+  tabBadge: {
+    backgroundColor: '#7C3AED',
+    paddingHorizontal: 6,
+    paddingVertical: 1,
+    borderRadius: 10,
+    minWidth: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  tabBadgeText: {
+    color: '#FFFFFF',
+    fontSize: 10,
+    fontWeight: '800',
+  },
+  callsSection: {
+    backgroundColor: '#FFFFFF',
+    flex: 1,
+  },
+  emptyContainer: {
+    alignItems: 'center',
+    paddingVertical: spacing.xxl,
+    paddingHorizontal: spacing.xl,
+  },
+  convList: {
+    backgroundColor: '#FFFFFF',
+  },
+  convRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: spacing.md,
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#F1F5F9',
+  },
+  convAvatar: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    backgroundColor: '#E2E8F0',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 12,
+    overflow: 'hidden',
+  },
+  avatarImg: {
+    width: '100%',
+    height: '100%',
+  },
+  avatarLetter: {
+    fontSize: 18,
+    fontWeight: '800',
+    color: '#475569',
+  },
+  callMetaRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    marginTop: 2,
+  },
+  callDirArrow: {
+    fontSize: 14,
+    fontWeight: '800',
+  },
+  arrowMissed: {
+    color: '#EF4444',
+  },
+  arrowOut: {
+    color: '#22C55E',
+  },
+  arrowIn: {
+    color: '#3B82F6',
+  },
+  callMetaText: {
+    fontSize: 12,
+    color: '#64748B',
+  },
+  callbackBtn: {
+    padding: 8,
+    borderRadius: 20,
+    backgroundColor: '#F8FAFC',
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+  },
+  callbackIcon: {
+    fontSize: 18,
   },
 });

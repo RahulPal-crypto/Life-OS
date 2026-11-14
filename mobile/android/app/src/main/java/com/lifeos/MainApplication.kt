@@ -21,6 +21,7 @@ class MainApplication : Application(), ReactApplication {
           add(MemoriesVaultPackage())
           add(ConnectContactsPackage())
           add(ConnectStoragePackage())
+          add(ConnectCallPackage())
         },
     )
   }

@@ -364,13 +364,123 @@ class ConnectStorageModule(private val reactContext: ReactApplicationContext) :
       }
     }.start()
   }
+
+  // 11. Save call log to local database
+  @ReactMethod
+  fun saveCallLog(call: ReadableMap, promise: Promise) {
+    Thread {
+      try {
+        val db = dbHelper.writableDatabase
+        val values = ContentValues().apply {
+          put("id", call.getString("id"))
+          put("caller_id", if (call.hasKey("callerId")) call.getString("callerId") else "")
+          put("receiver_id", if (call.hasKey("receiverId")) call.getString("receiverId") else "")
+          put("conversation_id", if (call.hasKey("conversationId") && !call.isNull("conversationId")) call.getString("conversationId") else null)
+          put("call_type", if (call.hasKey("callType")) call.getString("callType") else "voice")
+          put("status", if (call.hasKey("status")) call.getString("status") else "completed")
+          put("started_at", if (call.hasKey("startedAt") && !call.isNull("startedAt")) call.getString("startedAt") else null)
+          put("ended_at", if (call.hasKey("endedAt") && !call.isNull("endedAt")) call.getString("endedAt") else null)
+          put("duration_seconds", if (call.hasKey("durationSeconds")) call.getInt("durationSeconds") else 0)
+          put("created_at", if (call.hasKey("createdAt") && !call.isNull("createdAt")) call.getString("createdAt") else System.currentTimeMillis().toString())
+          put("is_outgoing", if (call.hasKey("isOutgoing") && call.getBoolean("isOutgoing")) 1 else 0)
+          put("contact_user_id", if (call.hasKey("contactUserId") && !call.isNull("contactUserId")) call.getString("contactUserId") else null)
+          put("contact_name", if (call.hasKey("contactName") && !call.isNull("contactName")) call.getString("contactName") else "Contact")
+          put("contact_avatar", if (call.hasKey("contactAvatar") && !call.isNull("contactAvatar")) call.getString("contactAvatar") else null)
+          put("contact_phone", if (call.hasKey("contactPhone") && !call.isNull("contactPhone")) call.getString("contactPhone") else null)
+        }
+        db.insertWithOnConflict("connect_calls", null, values, SQLiteDatabase.CONFLICT_REPLACE)
+        promise.resolve(true)
+      } catch (e: Exception) {
+        promise.reject("DB_ERROR", e.message, e)
+      }
+    }.start()
+  }
+
+  // 12. Batch save call logs
+  @ReactMethod
+  fun saveCallLogs(calls: ReadableArray, promise: Promise) {
+    Thread {
+      val db = dbHelper.writableDatabase
+      db.beginTransaction()
+      try {
+        for (i in 0 until calls.size()) {
+          val call = calls.getMap(i) ?: continue
+          val values = ContentValues().apply {
+            put("id", call.getString("id"))
+            put("caller_id", if (call.hasKey("callerId")) call.getString("callerId") else "")
+            put("receiver_id", if (call.hasKey("receiverId")) call.getString("receiverId") else "")
+            put("conversation_id", if (call.hasKey("conversationId") && !call.isNull("conversationId")) call.getString("conversationId") else null)
+            put("call_type", if (call.hasKey("callType")) call.getString("callType") else "voice")
+            put("status", if (call.hasKey("status")) call.getString("status") else "completed")
+            put("started_at", if (call.hasKey("startedAt") && !call.isNull("startedAt")) call.getString("startedAt") else null)
+            put("ended_at", if (call.hasKey("endedAt") && !call.isNull("endedAt")) call.getString("endedAt") else null)
+            put("duration_seconds", if (call.hasKey("durationSeconds")) call.getInt("durationSeconds") else 0)
+            put("created_at", if (call.hasKey("createdAt") && !call.isNull("createdAt")) call.getString("createdAt") else System.currentTimeMillis().toString())
+            put("is_outgoing", if (call.hasKey("isOutgoing") && call.getBoolean("isOutgoing")) 1 else 0)
+            put("contact_user_id", if (call.hasKey("contactUserId") && !call.isNull("contactUserId")) call.getString("contactUserId") else null)
+            put("contact_name", if (call.hasKey("contactName") && !call.isNull("contactName")) call.getString("contactName") else "Contact")
+            put("contact_avatar", if (call.hasKey("contactAvatar") && !call.isNull("contactAvatar")) call.getString("contactAvatar") else null)
+            put("contact_phone", if (call.hasKey("contactPhone") && !call.isNull("contactPhone")) call.getString("contactPhone") else null)
+          }
+          db.insertWithOnConflict("connect_calls", null, values, SQLiteDatabase.CONFLICT_REPLACE)
+        }
+        db.setTransactionSuccessful()
+        promise.resolve(true)
+      } catch (e: Exception) {
+        promise.reject("DB_ERROR", e.message, e)
+      } finally {
+        db.endTransaction()
+      }
+    }.start()
+  }
+
+  // 13. Get local call logs (WhatsApp Calls tab)
+  @ReactMethod
+  fun getCallLogs(limit: Int, promise: Promise) {
+    Thread {
+      try {
+        val db = dbHelper.readableDatabase
+        val safeLimit = if (limit in 1..200) limit else 50
+        val cursor = db.rawQuery(
+          "SELECT * FROM connect_calls ORDER BY created_at DESC LIMIT $safeLimit",
+          null
+        )
+        val list: WritableArray = Arguments.createArray()
+        cursor.use { c ->
+          while (c.moveToNext()) {
+            val item = Arguments.createMap().apply {
+              putString("id", c.getString(c.getColumnIndexOrThrow("id")))
+              putString("callerId", c.getString(c.getColumnIndexOrThrow("caller_id")))
+              putString("receiverId", c.getString(c.getColumnIndexOrThrow("receiver_id")))
+              putString("conversationId", c.getString(c.getColumnIndexOrThrow("conversation_id")))
+              putString("callType", c.getString(c.getColumnIndexOrThrow("call_type")))
+              putString("status", c.getString(c.getColumnIndexOrThrow("status")))
+              putString("startedAt", c.getString(c.getColumnIndexOrThrow("started_at")))
+              putString("endedAt", c.getString(c.getColumnIndexOrThrow("ended_at")))
+              putInt("durationSeconds", c.getInt(c.getColumnIndexOrThrow("duration_seconds")))
+              putString("createdAt", c.getString(c.getColumnIndexOrThrow("created_at")))
+              putBoolean("isOutgoing", c.getInt(c.getColumnIndexOrThrow("is_outgoing")) == 1)
+              putString("contactUserId", c.getString(c.getColumnIndexOrThrow("contact_user_id")))
+              putString("contactName", c.getString(c.getColumnIndexOrThrow("contact_name")))
+              putString("contactAvatar", c.getString(c.getColumnIndexOrThrow("contact_avatar")))
+              putString("contactPhone", c.getString(c.getColumnIndexOrThrow("contact_phone")))
+            }
+            list.pushMap(item)
+          }
+        }
+        promise.resolve(list)
+      } catch (e: Exception) {
+        promise.reject("DB_ERROR", e.message, e)
+      }
+    }.start()
+  }
 }
 
 /**
  * Android SQLiteOpenHelper creating WhatsApp-style local tables
  */
 private class ConnectDatabaseHelper(context: Context) :
-  SQLiteOpenHelper(context, "MyConnect.db", null, 1) {
+  SQLiteOpenHelper(context, "MyConnect.db", null, 2) {
 
   override fun onCreate(db: SQLiteDatabase) {
     db.execSQL(
@@ -421,9 +531,40 @@ private class ConnectDatabaseHelper(context: Context) :
     db.execSQL(
       "CREATE INDEX IF NOT EXISTS idx_connect_msg_conv_time ON connect_messages(conversation_id, created_at);"
     )
+
+    createCallsTable(db)
+  }
+
+  private fun createCallsTable(db: SQLiteDatabase) {
+    db.execSQL(
+      """
+      CREATE TABLE IF NOT EXISTS connect_calls (
+        id TEXT PRIMARY KEY,
+        caller_id TEXT NOT NULL,
+        receiver_id TEXT NOT NULL,
+        conversation_id TEXT,
+        call_type TEXT NOT NULL,
+        status TEXT NOT NULL,
+        started_at TEXT,
+        ended_at TEXT,
+        duration_seconds INTEGER DEFAULT 0,
+        created_at TEXT,
+        is_outgoing INTEGER NOT NULL,
+        contact_user_id TEXT,
+        contact_name TEXT,
+        contact_avatar TEXT,
+        contact_phone TEXT
+      );
+      """.trimIndent()
+    )
+    db.execSQL(
+      "CREATE INDEX IF NOT EXISTS idx_connect_calls_time ON connect_calls(created_at DESC);"
+    )
   }
 
   override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
-    // Migration logic for future schema changes
+    if (oldVersion < 2) {
+      createCallsTable(db)
+    }
   }
 }
