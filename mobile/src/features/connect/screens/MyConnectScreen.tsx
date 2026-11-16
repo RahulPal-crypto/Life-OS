@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import {
+  AppState,
   View,
   StyleSheet,
   Pressable,
@@ -11,7 +12,7 @@ import {
   Alert,
 } from 'react-native';
 import { ScreenContainer, Text } from '../../../components';
-import { colors, spacing, borderRadius } from '../../../theme';
+import { spacing, borderRadius } from '../../../theme';
 import { User, authService } from '../../auth';
 import {
   ConnectConversation,
@@ -81,25 +82,34 @@ export const MyConnectScreen: React.FC<MyConnectScreenProps> = ({
   const [newChatVisible, setNewChatVisible] = useState(false);
   const [createGroupVisible, setCreateGroupVisible] = useState(false);
 
+  useEffect(() => connectService.onLock(() => {
+    connectSocketService.disconnect();
+    setIsUnlocked(false);
+    setActiveConversation(null);
+    setLockModalVisible(true);
+  }), []);
+
   // 1. Initial Security Check
   useEffect(() => {
     connectService
       .getSecurityStatus()
       .then((status) => {
         setSecurityStatus(status);
-        if (status.isConfigured && !connectService.isUnlocked()) {
-          setLockModalVisible(true);
-        } else {
+        if (status.isConfigured && connectService.isUnlocked()) {
           setIsUnlocked(true);
-          connectService.setUnlocked(true);
           setLockModalVisible(false);
+        } else {
+          connectService.lock();
+          setIsUnlocked(false);
+          setLockModalVisible(true);
         }
       })
       .catch(() => {
-        // Fallback: unlock if security endpoint unavailable
-        setIsUnlocked(true);
-        connectService.setUnlocked(true);
-        setLockModalVisible(false);
+        // Fail closed. Protected Connect APIs also reject requests without the
+        // short-lived PIN grant, so a network error must never unlock the UI.
+        connectService.lock();
+        setIsUnlocked(false);
+        setLockModalVisible(true);
       });
   }, []);
 
@@ -150,13 +160,16 @@ export const MyConnectScreen: React.FC<MyConnectScreenProps> = ({
 
     // Connect WebSocket
     const token = authService.getTokens()?.accessToken;
-    if (token) {
-      connectSocketService.connect(token);
+    const connectToken = connectService.getUnlockToken();
+    if (token && connectToken) {
+      connectSocketService.connect(token, connectToken);
     }
 
     // Real-time message listener to update local DB and chat snippet & badge
     const unsubMsg = connectSocketService.onMessage(async (msg) => {
-      await connectLocalStorage.saveMessage(msg);
+      try {
+        await connectLocalStorage.saveMessage(msg);
+      } catch {}
       loadData(true);
     });
 
@@ -195,8 +208,42 @@ export const MyConnectScreen: React.FC<MyConnectScreenProps> = ({
       unsubIncoming();
       unsubCallResp();
       unsubCallEnded();
+      connectSocketService.disconnect();
+      connectService.lock();
     };
   }, [isUnlocked, loadData]);
+
+  useEffect(() => {
+    if (!isUnlocked) return;
+    let lockTimer: ReturnType<typeof setTimeout> | null = null;
+    const delays: Record<string, number | null> = {
+      immediate: 0,
+      '1m': 60_000,
+      '5m': 300_000,
+      never: null,
+    };
+    const subscription = AppState.addEventListener('change', (nextState) => {
+      if (nextState === 'active') {
+        if (lockTimer) clearTimeout(lockTimer);
+        lockTimer = null;
+        return;
+      }
+      if (lockTimer) clearTimeout(lockTimer);
+      const delay = delays[securityStatus.autoLockDelay] ?? null;
+      if (delay === null) return;
+      lockTimer = setTimeout(() => {
+        connectService.lock();
+        connectSocketService.disconnect();
+        setIsUnlocked(false);
+        setActiveConversation(null);
+        setLockModalVisible(true);
+      }, delay);
+    });
+    return () => {
+      subscription.remove();
+      if (lockTimer) clearTimeout(lockTimer);
+    };
+  }, [isUnlocked, securityStatus.autoLockDelay]);
 
   // 3. WhatsApp-style Phone Contacts Auto-Sync
   const syncPhoneContacts = useCallback(async () => {
@@ -325,8 +372,6 @@ export const MyConnectScreen: React.FC<MyConnectScreenProps> = ({
         callType,
       });
 
-      connectSocketService.emitCallInitiate(partner.id, activeConversation?.id || null, callType);
-
       setActiveCall({
         callId: res.callId,
         conversationId: res.conversationId,
@@ -355,7 +400,6 @@ export const MyConnectScreen: React.FC<MyConnectScreenProps> = ({
     if (!incomingCall) return;
     try {
       await connectService.respondCall(incomingCall.callId, 'accept');
-      connectSocketService.emitCallRespond(incomingCall.callId, 'accept');
       setActiveCall({ ...incomingCall, status: 'ongoing' });
       setIncomingCall(null);
     } catch (err: any) {
@@ -368,7 +412,6 @@ export const MyConnectScreen: React.FC<MyConnectScreenProps> = ({
     if (!incomingCall) return;
     try {
       await connectService.respondCall(incomingCall.callId, 'decline');
-      connectSocketService.emitCallRespond(incomingCall.callId, 'decline');
     } catch {
       // Ignore
     } finally {
@@ -383,7 +426,6 @@ export const MyConnectScreen: React.FC<MyConnectScreenProps> = ({
     setActiveCall(null);
     try {
       await connectService.endCall(callToLog.callId, durationSecs);
-      connectSocketService.emitCallEnd(callToLog.callId, durationSecs);
 
       const partner = callToLog.isOutgoing ? callToLog.receiver : callToLog.caller;
       const log: ConnectCallLog = {
@@ -532,7 +574,7 @@ export const MyConnectScreen: React.FC<MyConnectScreenProps> = ({
               CALLS
             </Text>
             {callLogs.filter((c) => c.status === 'missed').length > 0 && (
-              <View style={[styles.tabBadge, { backgroundColor: '#EF4444' }]}>
+              <View style={[styles.tabBadge, styles.missedCallBadge]}>
                 <Text style={styles.tabBadgeText}>
                   {callLogs.filter((c) => c.status === 'missed').length}
                 </Text>
@@ -1252,6 +1294,9 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontSize: 10,
     fontWeight: '800',
+  },
+  missedCallBadge: {
+    backgroundColor: '#EF4444',
   },
   callsSection: {
     backgroundColor: '#FFFFFF',

@@ -5,6 +5,7 @@
 export function validateSetupPin(body = {}) {
   const errors = [];
   const pin = typeof body.pin === 'string' ? body.pin.trim() : '';
+  const currentPin = typeof body.currentPin === 'string' ? body.currentPin.trim() : '';
 
   if (!pin) {
     errors.push('PIN is required.');
@@ -17,7 +18,8 @@ export function validateSetupPin(body = {}) {
     errors,
     sanitized: {
       pin,
-      biometricEnabled: Boolean(body.biometricEnabled),
+      currentPin: currentPin || null,
+      biometricEnabled: body.biometricEnabled === true,
       autoLockDelay: ['immediate', '1m', '5m', 'never'].includes(body.autoLockDelay)
         ? body.autoLockDelay
         : 'immediate',

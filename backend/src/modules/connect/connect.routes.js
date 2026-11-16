@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { ConnectController } from './connect.controller.js';
 import { authenticate } from '../../middlewares/auth.middleware.js';
+import { requireConnectUnlock } from './connectUnlock.middleware.js';
 
 const router = Router();
 
@@ -11,6 +12,10 @@ router.use(authenticate);
 router.get('/security/status', ConnectController.getSecurityStatus);
 router.post('/security/setup-pin', ConnectController.setupPin);
 router.post('/security/verify-pin', ConnectController.verifyPin);
+
+// A valid account token alone must not unlock chats. All chat and contact data
+// routes require the short-lived token issued after Connect PIN verification.
+router.use(requireConnectUnlock);
 
 // Contacts & Auto-Discovery
 router.post('/contacts/sync', ConnectController.syncContacts);

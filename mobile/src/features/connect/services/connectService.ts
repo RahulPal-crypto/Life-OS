@@ -1,5 +1,6 @@
 import { apiConfig } from '../../../config/apiConfig';
 import { authService } from '../../auth/services/authService';
+import { connectSocketService } from './connectSocketService';
 import {
   ConnectConversation,
   ConnectContactsSyncResult,
@@ -14,21 +15,57 @@ import {
 
 class ConnectService {
   private isUnlockedSession = false;
+  private connectUnlockToken: string | null = null;
+  private lockListeners = new Set<() => void>();
+
+  constructor() {
+    connectSocketService.onSessionExpired(() => this.lock());
+  }
 
   isUnlocked(): boolean {
     return this.isUnlockedSession;
   }
 
+  getUnlockToken(): string | null {
+    return this.connectUnlockToken;
+  }
+
   setUnlocked(unlocked: boolean): void {
     this.isUnlockedSession = unlocked;
+    if (!unlocked) this.connectUnlockToken = null;
   }
 
   lock(): void {
+    const wasUnlocked = this.isUnlockedSession || Boolean(this.connectUnlockToken);
     this.isUnlockedSession = false;
+    this.connectUnlockToken = null;
+    if (wasUnlocked) this.lockListeners.forEach((listener) => listener());
+  }
+
+  onLock(listener: () => void): () => void {
+    this.lockListeners.add(listener);
+    return () => this.lockListeners.delete(listener);
   }
 
   private async request(endpoint: string, options: RequestInit = {}): Promise<any> {
-    return authService.authorizedRequest(endpoint, options);
+    const previousAccessToken = authService.getTokens()?.accessToken;
+    try {
+      const result = await authService.authorizedRequest(endpoint, {
+        ...options,
+        headers: {
+          ...(options.headers as Record<string, string> | undefined),
+          ...(this.connectUnlockToken ? { 'x-connect-unlock-token': this.connectUnlockToken } : {}),
+        },
+      });
+      const tokens = authService.getTokens();
+      if (tokens?.accessToken && tokens.accessToken !== previousAccessToken && this.connectUnlockToken) {
+        connectSocketService.connect(tokens.accessToken, this.connectUnlockToken);
+      }
+      return result;
+    } catch (error: any) {
+      if (error?.code === 'CONNECT_LOCKED') this.lock();
+      throw error;
+    }
   }
 
   // 1. Security
@@ -46,7 +83,11 @@ class ConnectService {
       method: 'POST',
       body: JSON.stringify(payload),
     });
-    this.isUnlockedSession = true;
+    this.connectUnlockToken = json.data?.connectToken || null;
+    this.isUnlockedSession = Boolean(this.connectUnlockToken);
+    if (!this.isUnlockedSession) {
+      throw new Error('Connect PIN setup did not return a server unlock session.');
+    }
     return json.data;
   }
 
@@ -55,8 +96,11 @@ class ConnectService {
       method: 'POST',
       body: JSON.stringify({ pin }),
     });
-    const ok = Boolean(json.data?.verified);
-    if (ok) this.isUnlockedSession = true;
+    const ok = Boolean(json.data?.verified && json.data?.connectToken);
+    if (ok) {
+      this.connectUnlockToken = json.data?.connectToken || null;
+      this.isUnlockedSession = Boolean(this.connectUnlockToken);
+    }
     return ok;
   }
 

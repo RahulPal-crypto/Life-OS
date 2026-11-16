@@ -10,15 +10,20 @@ const NORMALIZED_PHONE_SQL = "REPLACE(REPLACE(REPLACE(REPLACE(phone, ' ', ''), '
 
 class AuthService {
   async findByNormalizedPhone(cleanPhone, excludeUserId = null, runQuery = query) {
-    if (excludeUserId) {
-      return runQuery(
-        `SELECT id FROM users WHERE ${NORMALIZED_PHONE_SQL} = ? AND id <> ? LIMIT 1`,
-        [cleanPhone, excludeUserId]
-      );
-    }
+    const last10 = cleanPhone.replace(/\D/g, '').slice(-10);
+    const excludeClause = excludeUserId ? 'AND id <> ?' : '';
+    const params = [cleanPhone, last10];
+    if (excludeUserId) params.push(excludeUserId);
+
     return runQuery(
-      `SELECT id FROM users WHERE ${NORMALIZED_PHONE_SQL} = ? LIMIT 1`,
-      [cleanPhone]
+      `SELECT id, email, phone FROM users
+       WHERE (
+         ${NORMALIZED_PHONE_SQL} = ? OR
+         RIGHT(${NORMALIZED_PHONE_SQL}, 10) = ?
+       ) ${excludeClause}
+       ORDER BY (email NOT LIKE '%@lifeos.internal') DESC
+       LIMIT 1`,
+      params
     );
   }
 

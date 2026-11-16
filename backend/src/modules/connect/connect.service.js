@@ -2,7 +2,9 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import bcrypt from 'bcryptjs';
-import { query } from '../../config/db.js';
+import jwt from 'jsonwebtoken';
+import { pool, query } from '../../config/db.js';
+import { env } from '../../config/env.js';
 
 const PIN_MAX_ATTEMPTS = 5;
 const PIN_LOCK_DURATION_MS = 60 * 1000; // 1 minute lockout after 5 fails
@@ -41,7 +43,19 @@ export class ConnectService {
   }
 
   static async setupSecurityPin(userId, payload) {
-    const { pin, biometricEnabled, autoLockDelay } = payload;
+    const { pin, currentPin, biometricEnabled, autoLockDelay } = payload;
+    const [existing] = await query(
+      'SELECT pin_hash FROM connect_security_settings WHERE user_id = ? LIMIT 1',
+      [userId]
+    );
+    if (existing?.pin_hash) {
+      if (!currentPin) {
+        throw createServiceError('Current Connect PIN is required to change your PIN.', 400, 'CURRENT_PIN_REQUIRED');
+      }
+      if (!(await bcrypt.compare(currentPin, existing.pin_hash))) {
+        throw createServiceError('Current Connect PIN is incorrect.', 401, 'INVALID_PIN');
+      }
+    }
     const pinHash = await bcrypt.hash(pin, 10);
 
     await query(
@@ -62,7 +76,12 @@ export class ConnectService {
       isConfigured: true,
       biometricEnabled: Boolean(biometricEnabled),
       autoLockDelay: autoLockDelay || 'immediate',
+      connectToken: this.issueConnectToken(userId),
     };
+  }
+
+  static issueConnectToken(userId) {
+    return jwt.sign({ sub: userId, scope: 'my_connect' }, env.jwt.accessSecret, { expiresIn: '15m' });
   }
 
   static async verifySecurityPin(userId, pin) {
@@ -121,7 +140,7 @@ export class ConnectService {
       [userId]
     );
 
-    return { success: true, verified: true };
+    return { success: true, verified: true, connectToken: this.issueConnectToken(userId) };
   }
 
   // ==========================================
@@ -161,10 +180,12 @@ export class ConnectService {
     const matchingUsers = await query(
       `SELECT id, name, phone, email, profile_image, headline
        FROM users
-       WHERE id != ? AND (
-         phone IN (${placeholders}) OR
-         RIGHT(phone, 10) IN (${placeholders})
-       )
+       WHERE id != ? AND account_status = 'active'
+         AND email NOT LIKE '%@lifeos.internal'
+         AND (
+           REPLACE(REPLACE(REPLACE(REPLACE(phone, ' ', ''), '-', ''), '(', ''), ')', '') IN (${placeholders}) OR
+           RIGHT(REPLACE(REPLACE(REPLACE(REPLACE(phone, ' ', ''), '-', ''), '(', ''), ')', ''), 10) IN (${placeholders})
+         )
        LIMIT 500`,
       [userId, ...cleanNumbers, ...cleanNumbers]
     );
@@ -236,20 +257,24 @@ export class ConnectService {
     const rows = await query(
       `SELECT id, name, phone, email, profile_image, headline
        FROM users
-       WHERE (
-         name LIKE ? OR
-         email LIKE ? OR
-         phone LIKE ?
-       )
+       WHERE account_status = 'active'
+         AND email NOT LIKE '%@lifeos.internal'
+         AND id <> ?
+         AND (
+           name LIKE ? OR
+           email LIKE ? OR
+           phone LIKE ?
+         )
        LIMIT 20`,
-      [`%${q}%`, `%${q}%`, `%${q}%`]
+      [userId, `%${q}%`, `%${q}%`, `%${q}%`]
     );
 
     return rows.map((r) => ({
       id: r.id,
       name: r.id === userId ? `${r.name} (You)` : r.name,
-      phone: r.phone,
-      email: r.email,
+      // Global name search must not reveal account contact details.
+      phone: null,
+      email: null,
       profileImage: r.profile_image,
       headline: r.id === userId ? 'Message yourself' : (r.headline || 'Hey there! I am using Life OS'),
       isSelf: r.id === userId,
@@ -316,6 +341,25 @@ export class ConnectService {
       membersByConv.get(m.conversation_id).push(m);
     }
 
+    // Heal duplicate direct threads created before pair-level locking was
+    // added. Hiding a duplicate list row alone strands its message history.
+    const directByPartner = new Map();
+    for (const conv of convRows) {
+      if (conv.type !== 'direct') continue;
+      const other = (membersByConv.get(conv.id) || []).find((m) => m.user_id !== userId);
+      if (!other) continue;
+      const ids = directByPartner.get(other.user_id) || [];
+      ids.push(conv.id);
+      directByPartner.set(other.user_id, ids);
+    }
+    const duplicatePartners = Array.from(directByPartner.entries()).filter(([, ids]) => ids.length > 1);
+    if (duplicatePartners.length > 0) {
+      for (const [partnerId] of duplicatePartners) {
+        await this.getOrCreateDirectConversation(userId, partnerId);
+      }
+      return this.listConversations(userId, filter);
+    }
+
     // 3. Calculate unread counts for each conversation
     const unreadRows = await query(
       `SELECT
@@ -378,25 +422,66 @@ export class ConnectService {
       };
     });
 
-    if (filter === 'unread') {
-      return results.filter((r) => r.unreadCount > 0);
-    }
-    if (filter === 'groups') {
-      return results.filter((r) => r.isGroup);
-    }
-    if (filter === 'favorites') {
-      return results.filter((r) => r.isFavorite);
+    // Deduplicate direct conversations by partnerUserId (keeping the most recently active)
+    const seenPartners = new Set();
+    const dedupedResults = [];
+    for (const item of results) {
+      if (!item.isGroup && item.partnerUserId) {
+        if (seenPartners.has(item.partnerUserId)) continue;
+        seenPartners.add(item.partnerUserId);
+      }
+      dedupedResults.push(item);
     }
 
-    return results;
+    if (filter === 'unread') {
+      return dedupedResults.filter((r) => r.unreadCount > 0);
+    }
+    if (filter === 'groups') {
+      return dedupedResults.filter((r) => r.isGroup);
+    }
+    if (filter === 'favorites') {
+      return dedupedResults.filter((r) => r.isFavorite);
+    }
+
+    return dedupedResults;
   }
 
   static async getOrCreateDirectConversation(userId, targetUserId) {
+    // Both participants can open a new direct chat at the same time. Serialize
+    // creation by the unordered user pair so both requests return one shared ID.
+    const [firstUserId, secondUserId] = [String(userId), String(targetUserId)].sort();
+    const lockName = `lifeos:direct:${crypto
+      .createHash('sha256')
+      .update(`${firstUserId}:${secondUserId}`)
+      .digest('hex')
+      .slice(0, 48)}`;
+    const lockConnection = await pool.getConnection();
+    let lockAcquired = false;
+
+    try {
+      const [rows] = await lockConnection.execute('SELECT GET_LOCK(?, 10) AS acquired', [lockName]);
+      if (Number(rows[0]?.acquired) !== 1) {
+        throw createServiceError('Could not safely open this conversation. Please try again.', 503, 'CONVERSATION_LOCK_TIMEOUT');
+      }
+      lockAcquired = true;
+      return await this.getOrCreateDirectConversationLocked(userId, targetUserId);
+    } finally {
+      try {
+        if (lockAcquired) {
+          await lockConnection.execute('SELECT RELEASE_LOCK(?)', [lockName]);
+        }
+      } finally {
+        lockConnection.release();
+      }
+    }
+  }
+
+  static async getOrCreateDirectConversationLocked(userId, targetUserId) {
     const isSelf = userId === targetUserId;
 
     // Verify target user exists
     const [targetUser] = await query(
-      'SELECT id, name, profile_image, headline, phone FROM users WHERE id = ? LIMIT 1',
+      'SELECT id, name, profile_image, headline, phone, email FROM users WHERE id = ? LIMIT 1',
       [targetUserId]
     );
     if (!targetUser) {
@@ -453,20 +538,86 @@ export class ConnectService {
       };
     }
 
-    // Check if a direct conversation already exists between these 2 users
-    const [existing] = await query(
+    // Auto-migrate placeholder users: if targetUser is real and has a phone,
+    // check if a placeholder user exists with the same phone number.
+    // If so, reassign any conversations and messages from the placeholder to targetUser.
+    if (targetUser.phone && !targetUser.email?.endsWith('@lifeos.internal')) {
+      const cleanTargetPhone = normalizePhone(targetUser.phone);
+      const targetLast10 = cleanTargetPhone.slice(-10);
+      const placeholders = await query(
+        `SELECT id FROM users
+         WHERE id != ? AND email LIKE '%@lifeos.internal' AND (
+           REPLACE(REPLACE(REPLACE(REPLACE(phone, ' ', ''), '-', ''), '(', ''), ')', '') = ? OR
+           RIGHT(REPLACE(REPLACE(REPLACE(REPLACE(phone, ' ', ''), '-', ''), '(', ''), ')', ''), 10) = ?
+         )`,
+        [targetUserId, cleanTargetPhone, targetLast10]
+      );
+
+      for (const ph of placeholders) {
+        // Re-point conversation memberships
+        await query(
+          'UPDATE IGNORE connect_conversation_members SET user_id = ? WHERE user_id = ?',
+          [targetUserId, ph.id]
+        );
+        await query('DELETE FROM connect_conversation_members WHERE user_id = ?', [ph.id]);
+        // Re-point messages
+        await query('UPDATE connect_messages SET sender_id = ? WHERE sender_id = ?', [targetUserId, ph.id]);
+        // Clean up placeholder contact and user rows
+        await query('DELETE FROM connect_contacts WHERE contact_user_id = ?', [ph.id]);
+        await query('DELETE FROM users WHERE id = ?', [ph.id]);
+      }
+    }
+
+    // Check if direct conversation(s) already exist between these 2 users
+    const existingRows = await query(
       `SELECT c.id
        FROM connect_conversations c
        JOIN connect_conversation_members m1 ON m1.conversation_id = c.id AND m1.user_id = ?
        JOIN connect_conversation_members m2 ON m2.conversation_id = c.id AND m2.user_id = ?
        WHERE c.type = 'direct'
-       LIMIT 1`,
+       ORDER BY c.created_at ASC`,
       [userId, targetUserId]
     );
 
-    if (existing?.id) {
+    if (existingRows.length > 0) {
+      const primaryConvId = existingRows[0].id;
+
+      // If duplicate conversations exist between the same 2 users, consolidate them into primary
+      if (existingRows.length > 1) {
+        for (let i = 1; i < existingRows.length; i++) {
+          const dupId = existingRows[i].id;
+          await query(
+            `UPDATE connect_conversation_members primary_member
+             JOIN connect_conversation_members duplicate_member
+               ON duplicate_member.user_id = primary_member.user_id
+             SET primary_member.is_pinned = GREATEST(primary_member.is_pinned, duplicate_member.is_pinned),
+                 primary_member.is_favorite = GREATEST(primary_member.is_favorite, duplicate_member.is_favorite),
+                 primary_member.is_muted = GREATEST(primary_member.is_muted, duplicate_member.is_muted),
+                 primary_member.last_read_at = GREATEST(primary_member.last_read_at, duplicate_member.last_read_at)
+             WHERE primary_member.conversation_id = ? AND duplicate_member.conversation_id = ?`,
+            [primaryConvId, dupId]
+          );
+          await query(
+            `UPDATE connect_conversations primary_conv
+             JOIN connect_conversations duplicate_conv ON duplicate_conv.id = ?
+             SET primary_conv.last_message_text = duplicate_conv.last_message_text,
+                 primary_conv.last_message_sender_id = duplicate_conv.last_message_sender_id,
+                 primary_conv.last_message_at = duplicate_conv.last_message_at
+             WHERE primary_conv.id = ?
+               AND duplicate_conv.last_message_at IS NOT NULL
+               AND (primary_conv.last_message_at IS NULL OR duplicate_conv.last_message_at > primary_conv.last_message_at)`,
+            [dupId, primaryConvId]
+          );
+          // Move messages to primary conversation
+          await query('UPDATE connect_messages SET conversation_id = ? WHERE conversation_id = ?', [primaryConvId, dupId]);
+          // Remove duplicate members and conversation
+          await query('DELETE FROM connect_conversation_members WHERE conversation_id = ?', [dupId]);
+          await query('DELETE FROM connect_conversations WHERE id = ?', [dupId]);
+        }
+      }
+
       return {
-        id: existing.id,
+        id: primaryConvId,
         type: 'direct',
         displayName: targetUser.name,
         displayAvatar: targetUser.profile_image,
@@ -516,11 +667,15 @@ export class ConnectService {
 
     const last10 = cleanPhone.slice(-10);
 
-    // 1. Check if user exists in database with this phone
+    // 1. Check if user exists in database with this phone (prefer registered real user over placeholder)
     const [existingUser] = await query(
-      `SELECT id, name, profile_image, headline, phone
+      `SELECT id, name, profile_image, headline, phone, email
        FROM users
-       WHERE phone = ? OR RIGHT(phone, 10) = ?
+       WHERE (
+         REPLACE(REPLACE(REPLACE(REPLACE(phone, ' ', ''), '-', ''), '(', ''), ')', '') = ? OR
+         RIGHT(REPLACE(REPLACE(REPLACE(REPLACE(phone, ' ', ''), '-', ''), '(', ''), ')', ''), 10) = ?
+       )
+       ORDER BY (email NOT LIKE '%@lifeos.internal') DESC, created_at DESC
        LIMIT 1`,
       [cleanPhone, last10]
     );
@@ -543,7 +698,13 @@ export class ConnectService {
       } catch {
         // If already exists or race condition, fetch existing id
         const [recheck] = await query(
-          `SELECT id FROM users WHERE phone = ? OR RIGHT(phone, 10) = ? LIMIT 1`,
+          `SELECT id FROM users
+           WHERE (
+             REPLACE(REPLACE(REPLACE(REPLACE(phone, ' ', ''), '-', ''), '(', ''), ')', '') = ? OR
+             RIGHT(REPLACE(REPLACE(REPLACE(REPLACE(phone, ' ', ''), '-', ''), '(', ''), ')', ''), 10) = ?
+           )
+           ORDER BY (email NOT LIKE '%@lifeos.internal') DESC
+           LIMIT 1`,
           [cleanPhone, last10]
         );
         if (recheck?.id) {
@@ -569,6 +730,21 @@ export class ConnectService {
 
   static async createGroupConversation(userId, payload) {
     const { name, icon, memberIds = [], description = '' } = payload;
+    const uniqueMembers = Array.from(new Set(memberIds.map(String))).filter((id) => id !== String(userId));
+    if (uniqueMembers.length < 1 || uniqueMembers.length > 100) {
+      throw createServiceError('A group must include between 1 and 100 other members.', 400, 'INVALID_GROUP_SIZE');
+    }
+    const memberSlots = uniqueMembers.map(() => '?').join(',');
+    const validMembers = await query(
+      `SELECT id FROM users
+       WHERE account_status = 'active'
+         AND email NOT LIKE '%@lifeos.internal'
+         AND id IN (${memberSlots})`,
+      uniqueMembers
+    );
+    if (validMembers.length !== uniqueMembers.length) {
+      throw createServiceError('One or more selected group members are unavailable.', 400, 'INVALID_GROUP_MEMBER');
+    }
     const conversationId = crypto.randomUUID();
 
     await query(
@@ -585,7 +761,6 @@ export class ConnectService {
     );
 
     // Add other members
-    const uniqueMembers = Array.from(new Set(memberIds)).filter((id) => id !== userId);
     for (const memId of uniqueMembers) {
       await query(
         `INSERT INTO connect_conversation_members (id, conversation_id, user_id, role)
@@ -872,6 +1047,14 @@ export class ConnectService {
   }
 
   static async markConversationRead(userId, conversationId) {
+    const [membership] = await query(
+      'SELECT id FROM connect_conversation_members WHERE conversation_id = ? AND user_id = ? LIMIT 1',
+      [conversationId, userId]
+    );
+    if (!membership) {
+      throw createServiceError('You are not a member of this conversation.', 403, 'NOT_A_MEMBER');
+    }
+
     await query(
       `UPDATE connect_conversation_members
        SET last_read_at = NOW()
@@ -900,14 +1083,24 @@ export class ConnectService {
 
   static async markMessageDelivered(userId, conversationId, messageId) {
     const [msg] = await query(
-      'SELECT sender_id, status FROM connect_messages WHERE id = ? AND conversation_id = ? LIMIT 1',
-      [messageId, conversationId]
+      `SELECT m.sender_id, m.status
+       FROM connect_messages m
+       JOIN connect_conversation_members cm ON cm.conversation_id = m.conversation_id AND cm.user_id = ?
+       WHERE m.id = ? AND m.conversation_id = ? LIMIT 1`,
+      [userId, messageId, conversationId]
     );
+
+    if (!msg) {
+      throw createServiceError('Message not found or you are not a conversation member.', 404, 'MESSAGE_NOT_FOUND');
+    }
+    if (msg.sender_id === userId) {
+      throw createServiceError('A sender cannot acknowledge their own message.', 403, 'INVALID_DELIVERY_RECEIPT');
+    }
 
     if (msg && msg.status === 'sent') {
       await query(
-        "UPDATE connect_messages SET status = 'delivered' WHERE id = ?",
-        [messageId]
+        "UPDATE connect_messages SET status = 'delivered' WHERE id = ? AND conversation_id = ? AND status = 'sent'",
+        [messageId, conversationId]
       );
     }
 
@@ -916,6 +1109,40 @@ export class ConnectService {
       conversationId,
       messageId,
     };
+  }
+
+  static async getConversationRecipientIds(userId, conversationId) {
+    const [membership] = await query(
+      'SELECT id FROM connect_conversation_members WHERE conversation_id = ? AND user_id = ? LIMIT 1',
+      [conversationId, userId]
+    );
+    if (!membership) {
+      throw createServiceError('You are not a member of this conversation.', 403, 'NOT_A_MEMBER');
+    }
+    const members = await query(
+      'SELECT user_id FROM connect_conversation_members WHERE conversation_id = ? AND user_id <> ?',
+      [conversationId, userId]
+    );
+    return members.map((member) => member.user_id);
+  }
+
+  static async relayCallSignal(userId, callId, targetUserId, signal) {
+    const [call] = await query(
+      'SELECT caller_id, receiver_id, status FROM connect_calls WHERE id = ? LIMIT 1',
+      [callId]
+    );
+    if (!call || call.status !== 'ongoing') {
+      throw createServiceError('Active call not found.', 404, 'CALL_NOT_FOUND');
+    }
+    const otherUserId = call.caller_id === userId
+      ? call.receiver_id
+      : call.receiver_id === userId
+        ? call.caller_id
+        : null;
+    if (!otherUserId || otherUserId !== targetUserId) {
+      throw createServiceError('You are not a participant in this call.', 403, 'CALL_NOT_AUTHORIZED');
+    }
+    return { targetUserId: otherUserId, fromUserId: userId, callId, signal };
   }
 
   // ==========================================
@@ -946,6 +1173,14 @@ export class ConnectService {
     if (!activeConvId) {
       const conv = await this.getOrCreateDirectConversation(callerId, receiverId);
       activeConvId = conv.id;
+    } else {
+      const members = await query(
+        'SELECT user_id FROM connect_conversation_members WHERE conversation_id = ? AND user_id IN (?, ?)',
+        [activeConvId, callerId, receiverId]
+      );
+      if (members.length !== 2) {
+        throw createServiceError('Call participants must belong to the selected conversation.', 403, 'CALL_NOT_AUTHORIZED');
+      }
     }
 
     const callId = crypto.randomUUID();

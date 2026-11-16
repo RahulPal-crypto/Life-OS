@@ -117,12 +117,12 @@ class AppService {
       }
       console.warn(`[AppUpdate] Failed to check GitHub Releases: ${error.message}; using latest release fallback`);
       return {
-        latestVersionCode: 10,
-        latestVersionName: '1.9',
+        latestVersionCode: 12,
+        latestVersionName: '2.1',
         minVersionCode: env.appUpdate.minVersionCode,
-        apkUrl: 'https://github.com/RahulPal-crypto/Life-OS/releases/download/v1.9/LifeOS-v1.9-c10.apk',
-        apkSizeBytes: 30000000,
-        releaseNotes: 'WhatsApp-style local SQLite storage, instant offline access, status bar UI padding, guaranteed delivery.',
+        apkUrl: 'https://github.com/RahulPal-crypto/Life-OS/releases/download/v2.1/LifeOS-v2.1-c12.apk',
+        apkSizeBytes: 57000000,
+        releaseNotes: 'My Connect 2-tier PIN security unlock, instant self-chat, improved real-time message sync, and stability improvements.',
         forceUpdate: false,
         publishedAt: new Date().toISOString(),
         source: 'fallback',

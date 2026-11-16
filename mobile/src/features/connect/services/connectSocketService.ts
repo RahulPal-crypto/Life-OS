@@ -14,6 +14,7 @@ type CallSignalCallback = (signalData: any) => void;
 class ConnectSocketService {
   private ws: WebSocket | null = null;
   private token: string | null = null;
+  private connectToken: string | null = null;
   private messageListeners: Set<MessageCallback> = new Set();
   private typingListeners: Set<TypingCallback> = new Set();
   private readListeners: Set<ReadReceiptCallback> = new Set();
@@ -22,6 +23,7 @@ class ConnectSocketService {
   private callResponseListeners: Set<CallResponseCallback> = new Set();
   private callEndedListeners: Set<CallEndedCallback> = new Set();
   private callSignalListeners: Set<CallSignalCallback> = new Set();
+  private sessionExpiredListeners: Set<() => void> = new Set();
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   private isExplicitDisconnect = false;
@@ -32,32 +34,34 @@ class ConnectSocketService {
     this.appStateSubscription = AppState.addEventListener('change', (nextState: AppStateStatus) => {
       if (nextState === 'active' && this.token && !this.isExplicitDisconnect) {
         if (!this.ws || this.ws.readyState === WebSocket.CLOSED || this.ws.readyState === WebSocket.CLOSING) {
-          this.connect(this.token);
+          this.connect(this.token, this.connectToken || '');
         }
       }
     });
   }
 
-  connect(accessToken: string): void {
-    if (!accessToken) return;
+  connect(accessToken: string, connectToken: string): void {
+    if (!accessToken || !connectToken) return;
 
     if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) {
-      if (this.token === accessToken) return;
+      if (this.token === accessToken && this.connectToken === connectToken) return;
       this.disconnect();
     }
 
     this.token = accessToken;
+    this.connectToken = connectToken;
     this.isExplicitDisconnect = false;
-    const url = getConnectWsUrl(accessToken);
+    const url = getConnectWsUrl(accessToken, connectToken);
 
     try {
-      this.ws = new WebSocket(url);
+      const socket = new WebSocket(url);
+      this.ws = socket;
 
-      this.ws.onopen = () => {
+      socket.onopen = () => {
         this.startHeartbeat();
       };
 
-      this.ws.onmessage = (event) => {
+      socket.onmessage = (event) => {
         try {
           const payload = JSON.parse(event.data);
           const { event: evType, data } = payload || {};
@@ -84,21 +88,29 @@ class ConnectSocketService {
         }
       };
 
-      this.ws.onclose = () => {
+      socket.onclose = (event: any) => {
+        if (this.ws !== socket) return;
         this.stopHeartbeat();
         this.ws = null;
+        if (event?.code === 4003) {
+          this.isExplicitDisconnect = true;
+          this.token = null;
+          this.connectToken = null;
+          this.sessionExpiredListeners.forEach((listener) => listener());
+          return;
+        }
         if (!this.isExplicitDisconnect && this.token) {
           if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
           this.reconnectTimer = setTimeout(() => {
             if (this.token && !this.isExplicitDisconnect) {
-              this.connect(this.token);
+              this.connect(this.token, this.connectToken || '');
             }
           }, 3000);
         }
       };
 
-      this.ws.onerror = () => {
-        this.ws?.close();
+      socket.onerror = () => {
+        socket.close();
       };
     } catch {
       // Ignore initial connection creation errors
@@ -138,6 +150,7 @@ class ConnectSocketService {
       this.ws = null;
     }
     this.token = null;
+    this.connectToken = null;
   }
 
   isConnected(): boolean {
@@ -182,15 +195,14 @@ class ConnectSocketService {
 
   emitTyping(
     conversationId: string,
-    isTyping: boolean,
-    recipientUserIds: string[] = []
+    isTyping: boolean
   ): void {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
     try {
       this.ws.send(
         JSON.stringify({
           event: isTyping ? 'typing_start' : 'typing_stop',
-          data: { conversationId, recipientUserIds },
+          data: { conversationId },
         })
       );
     } catch {
@@ -321,6 +333,11 @@ class ConnectSocketService {
   onCallSignal(cb: CallSignalCallback): () => void {
     this.callSignalListeners.add(cb);
     return () => this.callSignalListeners.delete(cb);
+  }
+
+  onSessionExpired(cb: () => void): () => void {
+    this.sessionExpiredListeners.add(cb);
+    return () => this.sessionExpiredListeners.delete(cb);
   }
 }
 

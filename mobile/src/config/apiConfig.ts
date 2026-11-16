@@ -82,9 +82,9 @@ export const apiConfig = {
   },
 };
 
-export const getConnectWsUrl = (token: string): string => {
+export const getConnectWsUrl = (token: string, connectToken: string): string => {
   const wsBase = API_URL.replace(/^http/, 'ws');
-  return `${wsBase}/connect-ws?token=${encodeURIComponent(token)}`;
+  return `${wsBase}/connect-ws?token=${encodeURIComponent(token)}&connectToken=${encodeURIComponent(connectToken)}`;
 };
 
 export const resolveMediaUrl = (url: string | null | undefined): string | null => {

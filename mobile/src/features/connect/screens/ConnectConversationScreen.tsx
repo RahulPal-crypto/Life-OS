@@ -15,7 +15,7 @@ import {
   StatusBar,
 } from 'react-native';
 import { Text } from '../../../components';
-import { colors, spacing, borderRadius } from '../../../theme';
+import { spacing } from '../../../theme';
 import { ConnectConversation, ConnectMessage, ConnectMessageType } from '../types';
 import { authService } from '../../auth';
 import { connectService } from '../services/connectService';
@@ -67,14 +67,20 @@ export const ConnectConversationScreen: React.FC<ConnectConversationScreenProps>
 
   const flatListRef = useRef<FlatList>(null);
   const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const messagesRef = useRef<ConnectMessage[]>([]);
+
+  useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
 
   useEffect(() => {
     let mounted = true;
 
     // Ensure live WebSocket connection is active
     const token = authService.getTokens()?.accessToken;
-    if (token) {
-      connectSocketService.connect(token);
+    const connectToken = connectService.getUnlockToken();
+    if (token && connectToken) {
+      connectSocketService.connect(token, connectToken);
     }
 
     // 1. WhatsApp Instant Load: Read existing messages from local phone database (0ms latency)
@@ -90,13 +96,22 @@ export const ConnectConversationScreen: React.FC<ConnectConversationScreenProps>
       .getMessages(conversation.id, { limit: 50 })
       .then(async (history) => {
         if (mounted) {
-          setMessages(history);
+          // Merge with any optimistic/local messages instead of replacing them.
+          // The local SQLite read can finish after this request and otherwise
+          // overwrite the fresher server history.
+          setMessages((prev) => {
+            const byId = new Map<string, ConnectMessage>();
+            for (const message of prev) byId.set(message.id, message);
+            for (const message of history) byId.set(message.id, message);
+            return Array.from(byId.values()).sort(
+              (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+            );
+          });
           setLoading(false);
           // Persist all incoming history to local phone storage
           await connectLocalStorage.saveMessages(history);
           // Mark conversation read locally and on server
           connectService.markRead(conversation.id).catch(() => {});
-          connectSocketService.emitMarkRead(conversation.id);
           await connectLocalStorage.markConversationRead(conversation.id);
         }
       })
@@ -109,12 +124,25 @@ export const ConnectConversationScreen: React.FC<ConnectConversationScreenProps>
 
     // 3. Listen for incoming real-time messages
     const unsubMsg = connectSocketService.onMessage(async (newMsg) => {
-      if (newMsg.conversationId === conversation.id) {
-        // Save to local phone storage immediately
-        await connectLocalStorage.saveMessage(newMsg);
+      const isCurrentConv = newMsg.conversationId === conversation.id;
+      const isFromPartner = Boolean(
+        conversation.partnerUserId && String(newMsg.senderId) === String(conversation.partnerUserId)
+      );
+
+      if (isCurrentConv || isFromPartner) {
+        // Normalize conversation ID to current conversation
+        const displayMsg: ConnectMessage = isCurrentConv ? newMsg : { ...newMsg, conversationId: conversation.id };
+
+        // Save to local phone storage immediately (non-blocking)
+        try {
+          await connectLocalStorage.saveMessage(displayMsg);
+        } catch (storageErr) {
+          console.warn('[Connect] SQLite save error on incoming message:', storageErr);
+        }
+
         setMessages((prev) => {
-          if (prev.some((m) => m.id === newMsg.id)) return prev;
-          return [...prev, newMsg];
+          if (prev.some((m) => m.id === displayMsg.id)) return prev;
+          return [...prev, displayMsg];
         });
         setTimeout(() => {
           flatListRef.current?.scrollToEnd({ animated: true });
@@ -122,7 +150,6 @@ export const ConnectConversationScreen: React.FC<ConnectConversationScreenProps>
 
         // Acknowledge delivery & read status back to sender
         connectSocketService.emitDelivered(conversation.id, newMsg.id);
-        connectSocketService.emitMarkRead(conversation.id);
         connectService.markRead(conversation.id).catch(() => {});
         await connectLocalStorage.markConversationRead(conversation.id);
       }
@@ -142,14 +169,20 @@ export const ConnectConversationScreen: React.FC<ConnectConversationScreenProps>
 
     // 5. Listen for typing events
     const unsubTyping = connectSocketService.onTyping((payload) => {
-      if (payload.conversationId === conversation.id && payload.userId !== currentUserId) {
+      if (
+        (payload.conversationId === conversation.id || String(payload.userId) === String(conversation.partnerUserId)) &&
+        String(payload.userId) !== String(currentUserId)
+      ) {
         setIsPartnerTyping(payload.isTyping);
       }
     });
 
     // 6. Listen for read receipts (updates double ticks to blue ✓✓)
     const unsubRead = connectSocketService.onReadReceipt(async (payload: { conversationId: string; readByUserId: string }) => {
-      if (payload.conversationId === conversation.id) {
+      if (
+        payload.conversationId === conversation.id ||
+        String(payload.readByUserId) === String(conversation.partnerUserId)
+      ) {
         await connectLocalStorage.markConversationRead(conversation.id);
         setMessages((prev) =>
           prev.map((m) => (m.isOutgoing ? { ...m, status: 'read' } : m))
@@ -157,15 +190,61 @@ export const ConnectConversationScreen: React.FC<ConnectConversationScreenProps>
       }
     });
 
+    // 7. Slow polling fallback for missed socket events. A short interval
+    // exhausts the shared per-IP API rate limit during a long open chat.
+    // Guarantees zero missed messages even across mobile carrier NAT or WiFi switches
+    const pollInterval = setInterval(() => {
+      connectService
+        .getMessages(conversation.id, { limit: 50 })
+        .then(async (history) => {
+          if (!mounted || !history || history.length === 0) return;
+          const knownIds = new Set(messagesRef.current.map((message) => message.id));
+          const incoming = history.filter(
+            (message) => !knownIds.has(message.id) && !message.isOutgoing
+          );
+          if (incoming.length > 0) {
+            try {
+              await connectLocalStorage.saveMessages(incoming);
+            } catch {}
+            // History sync means these reached this device. Send a read receipt
+            // so the sender gets the same status as a live socket delivery.
+            await connectService.markRead(conversation.id);
+          }
+          setMessages((prev) => {
+            const existingIds = new Set(prev.map((m) => m.id));
+            let hasNew = false;
+            for (const h of history) {
+              if (!existingIds.has(h.id)) {
+                hasNew = true;
+                break;
+              }
+            }
+            if (!hasNew) return prev;
+            const map = new Map<string, ConnectMessage>();
+            for (const m of prev) {
+              map.set(m.id, m);
+            }
+            for (const h of history) {
+              map.set(h.id, h);
+            }
+            return Array.from(map.values()).sort(
+              (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+            );
+          });
+        })
+        .catch(() => {});
+    }, 30000);
+
     return () => {
       mounted = false;
       unsubMsg();
       unsubDelivery();
       unsubTyping();
       unsubRead();
+      clearInterval(pollInterval);
       if (recordingTimerRef.current) clearInterval(recordingTimerRef.current);
     };
-  }, [conversation.id, currentUserId]);
+  }, [conversation.id, conversation.partnerUserId, currentUserId]);
 
   const handleInputChange = (text: string) => {
     setInputText(text);
@@ -195,14 +274,16 @@ export const ConnectConversationScreen: React.FC<ConnectConversationScreenProps>
       senderAvatar: null,
       messageType: 'text',
       content: cleanContent,
-      status: 'sent',
+      status: 'sending',
       replyToId: null,
       createdAt: new Date().toISOString(),
       isOutgoing: true,
     };
 
     // 1. WhatsApp Instant Save: Write directly to phone's local SQLite DB
-    await connectLocalStorage.saveMessage(tempMsg);
+    try {
+      await connectLocalStorage.saveMessage(tempMsg);
+    } catch {}
     setMessages((prev) => [...prev, tempMsg]);
 
     setTimeout(() => {
@@ -210,11 +291,13 @@ export const ConnectConversationScreen: React.FC<ConnectConversationScreenProps>
     }, 60);
 
     try {
-      // 2. Authoritative persistence on server relay and live WebSocket broadcast
+      // The REST send persists once and the server broadcasts it to recipients.
       const saved = await connectService.sendMessage(conversation.id, cleanContent);
       if (saved?.id) {
-        await connectLocalStorage.deleteMessage(tempId);
-        await connectLocalStorage.saveMessage(saved);
+        try {
+          await connectLocalStorage.deleteMessage(tempId);
+          await connectLocalStorage.saveMessage(saved);
+        } catch {}
         setMessages((prev) =>
           prev.map((m) => (m.id === tempId ? saved : m))
         );
@@ -240,6 +323,7 @@ export const ConnectConversationScreen: React.FC<ConnectConversationScreenProps>
     overrideType?: ConnectMessageType,
     durationSeconds?: number
   ) => {
+    let optimisticId: string | null = null;
     try {
       const detectedType: ConnectMessageType =
         overrideType ||
@@ -281,7 +365,7 @@ export const ConnectConversationScreen: React.FC<ConnectConversationScreenProps>
 
       // Optimistic message
       const tempMediaMsg: ConnectMessage = {
-        id: `temp_media_${Date.now()}`,
+        id: `temp_media_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
         conversationId: conversation.id,
         senderId: currentUserId,
         senderName: 'You',
@@ -293,11 +377,12 @@ export const ConnectConversationScreen: React.FC<ConnectConversationScreenProps>
         fileSize: uploadRes.fileSize,
         mimeType: uploadRes.mimeType,
         mediaDuration: uploadRes.mediaDuration || durationSeconds || null,
-        status: 'sent',
+        status: 'sending',
         replyToId: null,
         createdAt: new Date().toISOString(),
         isOutgoing: true,
       };
+      optimisticId = tempMediaMsg.id;
 
       // 1. WhatsApp Local Storage: Save media message immediately
       await connectLocalStorage.saveMessage(tempMediaMsg);
@@ -313,13 +398,16 @@ export const ConnectConversationScreen: React.FC<ConnectConversationScreenProps>
         );
       }
 
-      // Notify via socket
-      connectSocketService.sendSocketMessage(conversation.id, payload);
-
       setTimeout(() => {
         flatListRef.current?.scrollToEnd({ animated: true });
       }, 150);
     } catch (err: any) {
+      if (optimisticId) {
+        await connectLocalStorage.updateMessageStatus(optimisticId, 'failed').catch(() => {});
+        setMessages((prev) =>
+          prev.map((message) => message.id === optimisticId ? { ...message, status: 'failed' } : message)
+        );
+      }
       Alert.alert('Upload Failed', err?.message || 'Could not send attachment.');
     } finally {
       setUploadingStatus(null);
@@ -396,13 +484,20 @@ export const ConnectConversationScreen: React.FC<ConnectConversationScreenProps>
   };
 
   const renderStatusTicks = (status: ConnectMessage['status']) => {
-    if (status === 'sent') {
-      return <Text style={styles.tickGrey}>✓</Text>;
+    switch (status) {
+      case 'sending':
+        return <Text style={styles.tickClock}>🕒</Text>;
+      case 'failed':
+        return <Text style={styles.tickFailed}>❗</Text>;
+      case 'sent':
+        return <Text style={styles.tickGrey}>✓</Text>;
+      case 'delivered':
+        return <Text style={styles.tickGrey}>✓✓</Text>;
+      case 'read':
+        return <Text style={styles.tickBlue}>✓✓</Text>;
+      default:
+        return <Text style={styles.tickGrey}>✓</Text>;
     }
-    if (status === 'delivered') {
-      return <Text style={styles.tickGrey}>✓✓</Text>;
-    }
-    return <Text style={styles.tickBlue}>✓✓</Text>;
   };
 
   const renderMessageItem = ({ item }: { item: ConnectMessage }) => {
@@ -958,6 +1053,15 @@ const styles = StyleSheet.create({
   metaTime: {
     fontSize: 10,
     fontWeight: '500',
+  },
+  tickClock: {
+    fontSize: 9,
+    color: '#DDD6FE',
+  },
+  tickFailed: {
+    fontSize: 10,
+    color: '#EF4444',
+    fontWeight: '700',
   },
   tickGrey: {
     fontSize: 11,

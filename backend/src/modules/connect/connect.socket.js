@@ -29,7 +29,7 @@ function removeSocket(userId, ws) {
 export function broadcastToUsers(userIds = [], event, payload = {}) {
   const messageStr = JSON.stringify({ event, data: payload });
   for (const uid of userIds) {
-    const sockets = userSockets.get(uid);
+    const sockets = userSockets.get(String(uid));
     if (sockets) {
       for (const ws of sockets) {
         if (ws.readyState === WebSocket.OPEN) {
@@ -48,7 +48,7 @@ export function broadcastToUsers(userIds = [], event, payload = {}) {
  * Check if a user is currently connected/online
  */
 export function isUserOnline(userId) {
-  const sockets = userSockets.get(userId);
+  const sockets = userSockets.get(String(userId));
   return Boolean(sockets && sockets.size > 0);
 }
 
@@ -56,15 +56,16 @@ export function isUserOnline(userId) {
  * Initialize WebSocket server attached to HTTP server
  */
 export function initConnectWebSocketServer(httpServer) {
-  const wss = new WebSocketServer({ noServer: true });
+  const wss = new WebSocketServer({ noServer: true, maxPayload: 256 * 1024 });
 
   httpServer.on('upgrade', (request, socket, head) => {
     const url = new URL(request.url, `http://${request.headers.host || 'localhost'}`);
 
     if (url.pathname === '/connect-ws' || url.pathname === '/api/v1/connect-ws') {
       const token = url.searchParams.get('token');
+      const connectToken = url.searchParams.get('connectToken');
 
-      if (!token) {
+      if (!token || !connectToken) {
         socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
         socket.destroy();
         return;
@@ -72,7 +73,16 @@ export function initConnectWebSocketServer(httpServer) {
 
       try {
         const decoded = jwt.verify(token, env.jwt.accessSecret);
+        const unlock = jwt.verify(connectToken, env.jwt.accessSecret);
+        if (
+          decoded.type !== 'access' ||
+          unlock.scope !== 'my_connect' ||
+          String(unlock.sub) !== String(decoded.sub)
+        ) {
+          throw new Error('Connect is locked');
+        }
         request.user = decoded;
+        request.connectUnlockExpiresAt = Math.min(decoded.exp || 0, unlock.exp || 0) * 1000;
       } catch {
         socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
         socket.destroy();
@@ -86,13 +96,15 @@ export function initConnectWebSocketServer(httpServer) {
   });
 
   wss.on('connection', (ws, request) => {
-    const userId = request.user?.id || request.user?.sub;
+    // Keep the in-memory socket key in the same canonical form as DB user IDs.
+    const userId = String(request.user?.id || request.user?.sub || '');
     if (!userId) {
       ws.close(4001, 'Unauthorized');
       return;
     }
 
     addSocket(userId, ws);
+    ws.authExpiresAt = request.connectUnlockExpiresAt;
 
     // Send connection established confirmation
     ws.send(
@@ -109,11 +121,13 @@ export function initConnectWebSocketServer(httpServer) {
     });
 
     ws.on('message', async (raw) => {
+      ws.isAlive = true;
       try {
         const parsed = JSON.parse(raw.toString());
         const { event, data } = parsed;
 
         if (event === 'ping') {
+          ws.isAlive = true;
           ws.send(JSON.stringify({ event: 'pong', data: { time: Date.now() } }));
           return;
         }
@@ -157,7 +171,10 @@ export function initConnectWebSocketServer(httpServer) {
         }
 
         if (event === 'typing_start') {
-          const { conversationId, recipientUserIds = [] } = data || {};
+          const { conversationId } = data || {};
+          const recipientUserIds = conversationId
+            ? await ConnectService.getConversationRecipientIds(userId, conversationId)
+            : [];
           broadcastToUsers(recipientUserIds, 'typing', {
             conversationId,
             userId,
@@ -167,7 +184,10 @@ export function initConnectWebSocketServer(httpServer) {
         }
 
         if (event === 'typing_stop') {
-          const { conversationId, recipientUserIds = [] } = data || {};
+          const { conversationId } = data || {};
+          const recipientUserIds = conversationId
+            ? await ConnectService.getConversationRecipientIds(userId, conversationId)
+            : [];
           broadcastToUsers(recipientUserIds, 'typing', {
             conversationId,
             userId,
@@ -237,11 +257,8 @@ export function initConnectWebSocketServer(httpServer) {
         if (event === 'call_signal') {
           const { targetUserId, callId, signal } = data || {};
           if (targetUserId && signal) {
-            broadcastToUsers([targetUserId], 'call_signal', {
-              fromUserId: userId,
-              callId,
-              signal,
-            });
+            const authorizedSignal = await ConnectService.relayCallSignal(userId, callId, targetUserId, signal);
+            broadcastToUsers([authorizedSignal.targetUserId], 'call_signal', authorizedSignal);
           }
           return;
         }
@@ -267,6 +284,9 @@ export function initConnectWebSocketServer(httpServer) {
   // Ping interval every 30 seconds to clean up stalled sockets
   const interval = setInterval(() => {
     wss.clients.forEach((ws) => {
+      if (ws.authExpiresAt && Date.now() >= ws.authExpiresAt) {
+        return ws.close(4003, 'Connect unlock expired');
+      }
       if (ws.isAlive === false) return ws.terminate();
       ws.isAlive = false;
       ws.ping();

@@ -5,13 +5,11 @@ import {
   StyleSheet,
   Pressable,
   ActivityIndicator,
-  Switch,
   Image,
 } from 'react-native';
 import { Text } from '../../../components';
-import { colors, spacing, borderRadius } from '../../../theme';
+import { spacing, borderRadius } from '../../../theme';
 import { connectService } from '../services/connectService';
-import { memoriesNative } from '../../memories/services/memoriesNative';
 
 interface ConnectSecurityModalProps {
   visible: boolean;
@@ -24,15 +22,12 @@ interface ConnectSecurityModalProps {
 export const ConnectSecurityModal: React.FC<ConnectSecurityModalProps> = ({
   visible,
   isConfigured,
-  biometricEnabled,
   onUnlocked,
   onClose,
 }) => {
   const [pin, setPin] = useState('');
   const [confirmPin, setConfirmPin] = useState('');
   const [isSetupStepConfirm, setIsSetupStepConfirm] = useState(false);
-  const [enableBiometric, setEnableBiometric] = useState(true);
-  const [biometricAvailable, setBiometricAvailable] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
 
@@ -46,29 +41,7 @@ export const ConnectSecurityModal: React.FC<ConnectSecurityModalProps> = ({
       return;
     }
 
-    memoriesNative.canUseBiometric().then((avail) => {
-      setBiometricAvailable(avail);
-      // Auto-prompt biometric if configured and enabled
-      if (isConfigured && biometricEnabled && avail) {
-        handleBiometricPrompt();
-      }
-    });
-  }, [visible, isConfigured, biometricEnabled]);
-
-  const handleBiometricPrompt = async () => {
-    try {
-      setBusy(true);
-      setError('');
-      await memoriesNative.unlockWithBiometric();
-      // On successful fingerprint match
-      connectService.setUnlocked(true);
-      onUnlocked();
-    } catch {
-      setError('Fingerprint not recognized. Enter PIN to unlock.');
-    } finally {
-      setBusy(false);
-    }
-  };
+  }, [visible, isConfigured]);
 
   const handleKeyPress = (digit: string) => {
     setError('');
@@ -76,8 +49,8 @@ export const ConnectSecurityModal: React.FC<ConnectSecurityModalProps> = ({
       const nextPin = pin + digit;
       setPin(nextPin);
 
-      // Auto submit on 4 or 6 digits if already configured
-      if (isConfigured && (nextPin.length === 4 || nextPin.length === 6)) {
+      // Six-digit PINs submit automatically; four-digit PINs use the Unlock button.
+      if (isConfigured && nextPin.length === 6) {
         verifyPinDirect(nextPin);
       }
     }
@@ -96,6 +69,9 @@ export const ConnectSecurityModal: React.FC<ConnectSecurityModalProps> = ({
       const ok = await connectService.verifyPin(pinToVerify);
       if (ok) {
         onUnlocked();
+      } else {
+        setError('Could not unlock Connect. Please try your PIN again.');
+        setPin('');
       }
     } catch (err: any) {
       setError(err?.message || 'Incorrect PIN.');
@@ -127,7 +103,7 @@ export const ConnectSecurityModal: React.FC<ConnectSecurityModalProps> = ({
     try {
       await connectService.setupPin({
         pin,
-        biometricEnabled: enableBiometric && biometricAvailable,
+        biometricEnabled: false,
         autoLockDelay: 'immediate',
       });
       onUnlocked();
@@ -142,7 +118,7 @@ export const ConnectSecurityModal: React.FC<ConnectSecurityModalProps> = ({
     const activePin = isSetupStepConfirm ? confirmPin : pin;
     return (
       <View style={styles.dotsRow}>
-        {[0, 1, 2, 3].map((idx) => {
+        {[0, 1, 2, 3, 4, 5].map((idx) => {
           const filled = idx < activePin.length;
           return <View key={idx} style={[styles.dot, filled && styles.dotFilled]} />;
         })}
@@ -169,10 +145,10 @@ export const ConnectSecurityModal: React.FC<ConnectSecurityModalProps> = ({
           </Text>
           <Text variant="caption" color="#94A3B8" align="center" style={styles.subTitle}>
             {isConfigured
-              ? 'Enter your PIN or use Fingerprint to unlock chats'
+              ? 'Enter your PIN to unlock chats'
               : isSetupStepConfirm
-              ? 'Re-enter your 4-digit PIN to confirm'
-              : 'Create a 4-digit security PIN to protect your chats'}
+              ? 'Re-enter your 4 to 6 digit PIN to confirm'
+              : 'Create a 4 to 6 digit security PIN to protect your chats'}
           </Text>
         </View>
 
@@ -186,30 +162,9 @@ export const ConnectSecurityModal: React.FC<ConnectSecurityModalProps> = ({
           </Text>
         )}
 
-        {/* Biometric Scan Trigger Button */}
-        {isConfigured && biometricAvailable && biometricEnabled && (
-          <Pressable onPress={handleBiometricPrompt} style={styles.bioBtn}>
-            <Text style={styles.bioIcon}>👆</Text>
-            <Text variant="caption" color="#A78BFA" style={styles.bioText}>
-              Scan Fingerprint
-            </Text>
-          </Pressable>
-        )}
-
-        {/* First time setup: Biometric toggle */}
-        {!isConfigured && !isSetupStepConfirm && biometricAvailable && (
-          <View style={styles.switchRow}>
-            <Text variant="caption" color="#E2E8F0" style={styles.switchLabel}>
-              Enable Fingerprint Unlock
-            </Text>
-            <Switch
-              value={enableBiometric}
-              onValueChange={setEnableBiometric}
-              thumbColor={enableBiometric ? '#7C3AED' : '#94A3B8'}
-              trackColor={{ false: '#334155', true: '#C4B5FD' }}
-            />
-          </View>
-        )}
+        <Text variant="caption" color="#94A3B8" align="center">
+          PIN verification protects Connect sessions on the server.
+        </Text>
 
         {/* First time setup next / confirm button */}
         {!isConfigured && (
@@ -227,6 +182,22 @@ export const ConnectSecurityModal: React.FC<ConnectSecurityModalProps> = ({
             ) : (
               <Text variant="caption" color="#FFFFFF" style={styles.actionBtnText}>
                 {isSetupStepConfirm ? 'Confirm & Unlock' : 'Continue ›'}
+              </Text>
+            )}
+          </Pressable>
+        )}
+
+        {isConfigured && (
+          <Pressable
+            onPress={() => verifyPinDirect(pin)}
+            disabled={busy || pin.length < 4}
+            style={[styles.actionBtn, pin.length < 4 && styles.actionBtnDisabled]}
+          >
+            {busy ? (
+              <ActivityIndicator color="#FFFFFF" size="small" />
+            ) : (
+              <Text variant="caption" color="#FFFFFF" style={styles.actionBtnText}>
+                Unlock Connect
               </Text>
             )}
           </Pressable>
